@@ -2,7 +2,8 @@
 import sys
 from graph.workflow import build_graph, get_initial_state
 from utils.logger import print_separator, print_final_report
-from config import KIS_APP_KEY, GOOGLE_API_KEY, GROQ_API_KEY, LLM_PROVIDER, KIS_MODE, AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS
+from utils.discord import send_report
+from config import KIS_APP_KEY, GOOGLE_API_KEY, GROQ_API_KEY, LLM_PROVIDER, KIS_MODE, AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL
 
 
 def validate_config() -> bool:
@@ -68,6 +69,10 @@ def run():
     if ran:
         print("\n")
         print_final_report(accumulated_state)
+        if DISCORD_WEBHOOK_URL:
+            print("\n📨 Discord로 보고서 전송 중...")
+            if send_report(accumulated_state):
+                print("  ✓ Discord 전송 완료")
     else:
         print("❌ 에이전트 실행 실패")
 
