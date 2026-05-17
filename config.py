@@ -32,5 +32,8 @@ MAX_DEBATE_ROUNDS = int(os.getenv("MAX_DEBATE_ROUNDS", "3"))
 AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "false").lower() == "true"
 MAX_TRADE_AMOUNT = int(os.getenv("MAX_TRADE_AMOUNT", "100000"))
 
+# Discord Webhook
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
 # 분석 대상 시장
 TARGET_MARKETS = ["KOSPI", "KOSDAQ"]
