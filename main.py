@@ -2,12 +2,14 @@
 import sys
 from graph.workflow import build_graph, get_initial_state
 from utils.logger import print_separator, print_final_report
-from config import KIS_APP_KEY, GOOGLE_API_KEY, KIS_MODE, AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS
+from config import KIS_APP_KEY, GOOGLE_API_KEY, GROQ_API_KEY, LLM_PROVIDER, KIS_MODE, AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS
 
 
 def validate_config() -> bool:
     errors = []
-    if not GOOGLE_API_KEY:
+    if LLM_PROVIDER == "groq" and not GROQ_API_KEY:
+        errors.append("GROQ_API_KEY 가 설정되지 않았습니다. https://console.groq.com 에서 발급 후 .env 에 입력해주세요.")
+    elif LLM_PROVIDER == "gemini" and not GOOGLE_API_KEY:
         errors.append("GOOGLE_API_KEY 가 설정되지 않았습니다. .env 파일을 확인해주세요.")
     if not KIS_APP_KEY:
         errors.append("KIS_APP_KEY 가 설정되지 않았습니다. .env 파일을 확인해주세요.")
@@ -32,7 +34,7 @@ def print_startup_info():
   5. 💹 매매 실행 에이전트  - 주문 실행
 
 ⚙️  설정:
-  - LLM: Google Gemini (무료 티어)
+  - LLM: {LLM_PROVIDER.upper()} ({'Groq - llama-3.3-70b' if LLM_PROVIDER == 'groq' else 'Google Gemini 2.0 Flash'})
   - KIS 모드: {KIS_MODE.upper()} ({'실전 투자' if KIS_MODE == 'real' else '모의 투자'})
   - 자동 매매: {'활성화' if AUTO_TRADE_ENABLED else '비활성화 (시뮬레이션)'}
   - 최대 토론 라운드: {MAX_DEBATE_ROUNDS}회
