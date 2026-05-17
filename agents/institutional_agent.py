@@ -61,6 +61,7 @@ def institutional_agent_node(state: AgentState) -> dict:
 
     return {
         "institutional_analysis": analysis,
+        "institutional_stocks_raw": investor_data,
         "messages": [AIMessage(content=f"[기관/외국인 분석]: {analysis}", name="institutional_agent")],
     }
 
