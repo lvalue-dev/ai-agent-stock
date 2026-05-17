@@ -1,4 +1,5 @@
 """한국투자증권 KIS OpenAPI 래퍼"""
+import time
 import requests
 from datetime import datetime, timedelta
 from typing import Optional
@@ -139,7 +140,66 @@ def get_top_volume_stocks(market: str = "KOSPI", limit: int = 10) -> list[dict]:
     ]
 
 
-def get_stock_news(stock_code: str) -> list[dict]:
+def get_investor_trading(stock_code: str) -> dict:
+    """종목별 투자자 매매동향 (기관/외국인/개인)"""
+    try:
+        resp = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers=_headers("FHKST01010900"),
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        output = data.get("output", {})
+        return {
+            "code": stock_code,
+            "individual_net_buy": output.get("prsn_ntby_qty", "0"),
+            "individual_net_amount": output.get("prsn_ntby_tr_pbmn", "0"),
+            "foreign_net_buy": output.get("frgn_ntby_qty", "0"),
+            "foreign_net_amount": output.get("frgn_ntby_tr_pbmn", "0"),
+            "institution_net_buy": output.get("orgn_ntby_qty", "0"),
+            "institution_net_amount": output.get("orgn_ntby_tr_pbmn", "0"),
+            "trust_net_buy": output.get("trust_ntby_qty", "0"),
+            "trust_net_amount": output.get("trust_ntby_tr_pbmn", "0"),
+        }
+    except Exception as e:
+        return {"code": stock_code, "error": str(e)}
+
+
+def get_daily_volume(stock_code: str, days: int = 10) -> list[dict]:
+    """최근 N일 거래량 추이 조회"""
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        resp = requests.get(
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            headers=_headers("FHKST03010100"),
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": stock_code,
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        output = data.get("output2", [])[:days]
+        return [
+            {
+                "date": item.get("stck_bsop_date", ""),
+                "close": item.get("stck_clpr", ""),
+                "volume": item.get("acml_vol", ""),
+                "trade_amount": item.get("acml_tr_pbmn", ""),
+                "change_rate": item.get("prdy_ctrt", ""),
+            }
+            for item in output
+        ]
+    except Exception:
+        return []
+
+
+def get_stock_news(stock_code: str, limit: int = 10) -> list[dict]:
     """종목 관련 뉴스 조회"""
     resp = requests.get(
         f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/news-title",
@@ -149,12 +209,12 @@ def get_stock_news(stock_code: str) -> list[dict]:
     )
     resp.raise_for_status()
     data = resp.json()
-    output = data.get("output", [])[:5]
+    output = data.get("output", [])[:limit]
     return [
         {
             "title": item.get("news_ttl", ""),
             "time": item.get("datas", ""),
-            "code": item.get("news_id", ""),
+            "office": item.get("news_ofer_entp_code", ""),
         }
         for item in output
     ]
