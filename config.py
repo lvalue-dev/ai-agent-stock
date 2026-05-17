@@ -3,9 +3,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Google Gemini
+# LLM 제공자 설정 (groq 또는 gemini)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq")
+
+# Groq API (무료 티어: 14,400 req/day, 30 RPM - https://console.groq.com)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# Google Gemini API (무료 티어: 1,500 req/day, 15 RPM)
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GEMINI_MODEL = "gemini-2.0-flash"  # 무료 티어: 15 RPM, 1M TPM/day
+GEMINI_MODEL = "gemini-2.0-flash"
 
 # 한국투자증권 API
 KIS_MODE = os.getenv("KIS_MODE", "virtual")  # real or virtual
