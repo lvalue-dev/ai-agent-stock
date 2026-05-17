@@ -1,8 +1,8 @@
 """수퍼바이저 에이전트 - 토론 진행 및 최종 의사결정"""
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 from graph.state import AgentState
-from config import GOOGLE_API_KEY, GEMINI_MODEL, MAX_DEBATE_ROUNDS
+from config import MAX_DEBATE_ROUNDS
+from utils.llm import create_llm, invoke_with_retry
 from utils.logger import log_agent
 
 
@@ -15,12 +15,6 @@ def supervisor_node(state: AgentState) -> dict:
     market_analysis = state.get("market_analysis", "")
     news_analysis = state.get("news_analysis", "")
     screening_analysis = state.get("screening_analysis", "")
-
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.5,
-    )
 
     if round_num == 0:
         prompt = f"""당신은 한국 주식 투자팀의 수석 투자 전략가입니다.
@@ -86,7 +80,8 @@ def supervisor_node(state: AgentState) -> dict:
 
 반드시 "최종결정:" 으로 시작하는 줄에 결정 내용을 명확히 표시해주세요."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.5)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     opinion = response.content
 
     new_debate_log = debate_log + [f"[수퍼바이저 라운드 {round_num + 1}]: {opinion}"]
@@ -113,12 +108,6 @@ def debate_agent_node(state: AgentState) -> dict:
     supervisor_opinion = state.get("supervisor_opinion", "")
 
     log_agent("💬 토론 에이전트들", f"라운드 {round_num} 토론 응답 중...")
-
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.6,
-    )
 
     market_analysis = state.get("market_analysis", "")
     news_analysis = state.get("news_analysis", "")
@@ -147,7 +136,8 @@ def debate_agent_node(state: AgentState) -> dict:
 
 각 답변은 50-100자 이내로 간결하게 작성해주세요."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.6)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     debate_response = response.content
 
     new_debate_log = debate_log + [f"[에이전트 토론 라운드 {round_num}]: {debate_response}"]
