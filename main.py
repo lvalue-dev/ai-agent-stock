@@ -50,20 +50,24 @@ def run():
 
     print("\n🚀 멀티 에이전트 분석 시작...\n")
 
+    # 워크플로우 그래프 빌드
     app = build_graph()
     initial_state = get_initial_state()
 
-    final_state = None
+    # 스트리밍으로 진행 상황 출력하면서 전체 상태 누적
+    accumulated_state = dict(initial_state)
+    ran = False
     for step in app.stream(initial_state, {"recursion_limit": 50}):
         for node_name, node_output in step.items():
             if node_name != "__end__":
                 print(f"\n  ✓ '{node_name}' 완료")
-        final_state = step
+                if isinstance(node_output, dict):
+                    accumulated_state.update(node_output)
+        ran = True
 
-    if final_state:
-        last_state = list(final_state.values())[-1] if final_state else {}
+    if ran:
         print("\n")
-        print_final_report(last_state)
+        print_final_report(accumulated_state)
     else:
         print("❌ 에이전트 실행 실패")
 
