@@ -1,9 +1,8 @@
 """시장 분석 에이전트 - KOSPI/KOSDAQ 지수 및 시장 흐름 분석"""
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 from graph.state import AgentState
 from tools.kis_api import get_market_index, get_top_volume_stocks
-from config import GOOGLE_API_KEY, GEMINI_MODEL
+from utils.llm import create_llm, invoke_with_retry
 from utils.logger import log_agent
 
 
@@ -39,12 +38,6 @@ def market_analyst_node(state: AgentState) -> dict:
 {_format_stocks(top_kosdaq)}
 """
 
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.3,
-    )
-
     prompt = f"""당신은 한국 주식시장 전문 시장 분석가입니다.
 다음 실시간 시장 데이터를 분석하여 전문적인 시장 분석을 제공해주세요.
 
@@ -60,7 +53,8 @@ def market_analyst_node(state: AgentState) -> dict:
 
 200-300자 이내의 핵심 분석을 제공해주세요."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.3)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     analysis = response.content
 
     log_agent("📊 시장 분석 에이전트", f"분석 완료:\n{analysis}")
