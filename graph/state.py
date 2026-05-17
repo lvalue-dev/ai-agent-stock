@@ -1,5 +1,5 @@
 """LangGraph 공유 상태 정의"""
-from typing import TypedDict, Annotated, Optional
+from typing import TypedDict, Annotated
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
@@ -8,23 +8,24 @@ class AgentState(TypedDict):
     # 대화 메시지 히스토리 (add_messages로 누적)
     messages: Annotated[list[BaseMessage], add_messages]
 
-    # 각 에이전트 분석 결과
-    market_analysis: str        # 시장 분석 에이전트 결과
-    news_analysis: str          # 뉴스 분석 에이전트 결과
-    screened_stocks: list[dict] # 스크리닝된 종목 목록
-    screening_analysis: str     # 스크리닝 에이전트 의견
-    volume_analysis: str        # 거래량 분석 에이전트 결과
-    institutional_analysis: str # 기관/외국인 투자자 분석 결과
+    # 각 에이전트 분석 결과 (텍스트)
+    market_analysis: str
+    news_analysis: str
+    screened_stocks: list[dict]
+    screening_analysis: str
+    volume_analysis: str
+    institutional_analysis: str
+
+    # 차트용 raw 데이터
+    volume_stocks_raw: list[dict]       # 거래량 상위 종목 raw (차트용)
+    institutional_stocks_raw: list[dict] # 투자자별 순매수 raw (차트용)
 
     # 토론 관리
-    debate_round: int           # 현재 토론 라운드
-    debate_log: list[str]       # 토론 기록
-    consensus_reached: bool     # 컨센서스 달성 여부
+    debate_round: int
+    debate_log: list[str]
+    consensus_reached: bool
 
     # 최종 판단
-    final_decision: str         # 매수/매도/관망
-    target_stocks: list[dict]   # 최종 선택 종목
-    supervisor_opinion: str     # 수퍼바이저 최종 의견
-
-    # 매매 결과
-    trade_results: list[dict]   # 실행된 주문 결과
+    final_decision: str
+    target_stocks: list[dict]
+    supervisor_opinion: str
