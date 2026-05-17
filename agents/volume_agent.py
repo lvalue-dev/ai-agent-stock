@@ -63,8 +63,22 @@ def volume_agent_node(state: AgentState) -> dict:
 
     log_agent("📈 거래량 분석 에이전트", f"분석 완료:\n{analysis}")
 
+    # raw 데이터: 차트용 (거래량 상위 전체 목록)
+    volume_raw = []
+    for s in all_volume_leaders[:20]:
+        volume_raw.append({
+            "name": s.get("name", ""),
+            "code": s.get("code", ""),
+            "volume": s.get("volume", "0"),
+            "volume_rate": s.get("volume_rate", "0"),
+            "change_rate": s.get("change_rate", "0"),
+            "price": s.get("price", "0"),
+            "market": "KOSPI" if s in kospi_vol else "KOSDAQ",
+        })
+
     return {
         "volume_analysis": analysis,
+        "volume_stocks_raw": volume_raw,
         "messages": [AIMessage(content=f"[거래량 분석]: {analysis}", name="volume_agent")],
     }
 
