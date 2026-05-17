@@ -37,9 +37,11 @@ with st.sidebar:
     st.caption("에이전트 파이프라인")
     for emoji, name, desc in [
         ("📊", "시장 분석", "KOSPI/KOSDAQ 흐름"),
-        ("📰", "뉴스 분석", "시장 뉴스/공시"),
+        ("📰", "뉴스 분석", "뉴스/공시 심층 분석"),
         ("🔍", "스크리닝", "유망 종목 발굴"),
-        ("🎯", "수퍼바이저", "토론 진행/결정"),
+        ("📈", "거래량 분석", "거래량 패턴/모멘텀"),
+        ("🏦", "기관/외국인", "스마트머니 동향"),
+        ("🎯", "수퍼바이저", "5자 토론 진행/결정"),
         ("💹", "매매 실행", "주문 처리"),
     ]:
         st.markdown(f"{emoji} **{name}** — _{desc}_")
@@ -60,13 +62,15 @@ for key, default in [("results", None), ("messages", []), ("ran_at", None)]:
 
 # ── 에이전트 메타 ────────────────────────────────────────────────────
 AGENT_META = {
-    "market_analyst":  ("📊", "시장 분석 에이전트"),
-    "news_analyst":    ("📰", "뉴스 분석 에이전트"),
-    "stock_screener":  ("🔍", "스크리닝 에이전트"),
-    "supervisor":      ("🎯", "수퍼바이저"),
-    "debate_agents":   ("💬", "토론 에이전트"),
-    "finalize":        ("✅", "최종 결정"),
-    "trading_agent":   ("💹", "매매 실행 에이전트"),
+    "market_analyst":      ("📊", "시장 분석 에이전트"),
+    "news_analyst":        ("📰", "뉴스 분석 에이전트"),
+    "stock_screener":      ("🔍", "스크리닝 에이전트"),
+    "volume_agent":        ("📈", "거래량 분석 에이전트"),
+    "institutional_agent": ("🏦", "기관/외국인 분석 에이전트"),
+    "supervisor":          ("🎯", "수퍼바이저"),
+    "debate_agents":       ("💬", "토론 에이전트"),
+    "finalize":            ("✅", "최종 결정"),
+    "trading_agent":       ("💹", "매매 실행 에이전트"),
 }
 
 
@@ -77,6 +81,10 @@ def _node_content(node_name: str, state: dict) -> str:
         return state.get("news_analysis", "")
     if node_name == "stock_screener":
         return state.get("screening_analysis", "")
+    if node_name == "volume_agent":
+        return state.get("volume_analysis", "")
+    if node_name == "institutional_agent":
+        return state.get("institutional_analysis", "")
     if node_name == "supervisor":
         return state.get("supervisor_opinion", "")
     if node_name == "debate_agents":
@@ -191,11 +199,13 @@ if st.session_state.results:
     st.divider()
 
     # 탭
-    tab_chat, tab_market, tab_news, tab_screen, tab_debate, tab_trade = st.tabs([
+    tab_chat, tab_market, tab_news, tab_screen, tab_volume, tab_inst, tab_debate, tab_trade = st.tabs([
         "💬 에이전트 대화",
         "📊 시장 분석",
         "📰 뉴스 분석",
         "🔍 종목 스크리닝",
+        "📈 거래량 분석",
+        "🏦 기관/외국인",
         "🗣️ 토론 기록",
         "💹 매매 결과",
     ])
@@ -222,6 +232,16 @@ if st.session_state.results:
     with tab_screen:
         st.subheader("🔍 종목 스크리닝")
         content = state.get("screening_analysis", "")
+        st.markdown(content if content else "데이터 없음")
+
+    with tab_volume:
+        st.subheader("📈 거래량 분석")
+        content = state.get("volume_analysis", "")
+        st.markdown(content if content else "데이터 없음")
+
+    with tab_inst:
+        st.subheader("🏦 기관/외국인 투자자 분석")
+        content = state.get("institutional_analysis", "")
         st.markdown(content if content else "데이터 없음")
 
     with tab_debate:
@@ -260,10 +280,11 @@ else:
     st.divider()
     st.subheader("분석 흐름")
 
-    flow_cols = st.columns(9)
+    flow_cols = st.columns(13)
     flow = [
         ("📊", "시장분석"), ("➡️", ""), ("📰", "뉴스분석"), ("➡️", ""),
-        ("🔍", "스크리닝"), ("➡️", ""), ("🎯", "토론"), ("➡️", ""), ("💹", "매매"),
+        ("🔍", "스크리닝"), ("➡️", ""), ("📈", "거래량"), ("➡️", ""),
+        ("🏦", "기관/외국인"), ("➡️", ""), ("🎯", "토론"), ("➡️", ""), ("💹", "매매"),
     ]
     for i, (e, l) in enumerate(flow):
         with flow_cols[i]:
