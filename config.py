@@ -15,7 +15,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 GEMINI_MODEL = "gemini-2.0-flash"
 
 # 한국투자증권 API
-KIS_MODE = os.getenv("KIS_MODE", "virtual")  # real or virtual
+KIS_MODE = os.getenv("KIS_MODE", "real")  # real or virtual
 KIS_APP_KEY = os.getenv("KIS_APP_KEY", "")
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "")
 KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")
