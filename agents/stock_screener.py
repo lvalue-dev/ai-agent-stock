@@ -1,9 +1,8 @@
 """종목 스크리닝 에이전트 - 조건에 맞는 투자 유망 종목 발굴"""
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 from graph.state import AgentState
 from tools.kis_api import get_top_volume_stocks, get_stock_price
-from config import GOOGLE_API_KEY, GEMINI_MODEL
+from utils.llm import create_llm, invoke_with_retry
 from utils.logger import log_agent
 
 
@@ -33,12 +32,6 @@ def stock_screener_node(state: AgentState) -> dict:
     stocks_text = _format_detailed_stocks(detailed_stocks)
     candidate_list = _format_candidates(all_stocks)
 
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.4,
-    )
-
     prompt = f"""당신은 한국 주식시장 전문 종목 발굴 애널리스트입니다.
 시장 데이터와 뉴스 분석을 바탕으로 투자 유망 종목을 스크리닝합니다.
 
@@ -65,7 +58,8 @@ def stock_screener_node(state: AgentState) -> dict:
 - 추천종목: [종목코드 종목명] - 이유 (목표가: xxx원)
 형태로 종목별로 작성해주세요."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.4)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     analysis = response.content
 
     log_agent("🔍 스크리닝 에이전트", f"스크리닝 완료:\n{analysis}")
