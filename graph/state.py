@@ -1,5 +1,5 @@
 """LangGraph 공유 상태 정의"""
-from typing import TypedDict, Annotated
+from typing import TypedDict, Annotated, Optional
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
@@ -13,6 +13,8 @@ class AgentState(TypedDict):
     news_analysis: str          # 뉴스 분석 에이전트 결과
     screened_stocks: list[dict] # 스크리닝된 종목 목록
     screening_analysis: str     # 스크리닝 에이전트 의견
+    volume_analysis: str        # 거래량 분석 에이전트 결과
+    institutional_analysis: str # 기관/외국인 투자자 분석 결과
 
     # 토론 관리
     debate_round: int           # 현재 토론 라운드
