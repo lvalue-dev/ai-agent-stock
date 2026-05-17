@@ -5,7 +5,7 @@ load_dotenv()
 
 # Google Gemini
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GEMINI_MODEL = "gemini-1.5-flash"  # 무료 티어: 15 RPM, 1M TPM/day
+GEMINI_MODEL = "gemini-2.0-flash"  # 무료 티어: 15 RPM, 1M TPM/day
 
 # 한국투자증권 API
 KIS_MODE = os.getenv("KIS_MODE", "virtual")  # real or virtual
