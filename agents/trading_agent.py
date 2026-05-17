@@ -1,9 +1,9 @@
 """매매 실행 에이전트 - 최종 결정에 따른 주문 실행"""
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 from graph.state import AgentState
 from tools.kis_api import get_account_balance, get_stock_price, place_order
-from config import GOOGLE_API_KEY, GEMINI_MODEL, AUTO_TRADE_ENABLED, MAX_TRADE_AMOUNT
+from config import AUTO_TRADE_ENABLED, MAX_TRADE_AMOUNT
+from utils.llm import create_llm, invoke_with_retry
 from utils.logger import log_agent
 
 
@@ -30,17 +30,10 @@ def trading_agent_node(state: AgentState) -> dict:
         holdings = []
 
     trade_results = []
-
     if final_decision == "매수":
         trade_results = _execute_buy(target_stocks, available_cash)
     elif final_decision == "매도":
         trade_results = _execute_sell(holdings)
-
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.2,
-    )
 
     result_text = _format_trade_results(trade_results)
     prompt = f"""다음 매매 실행 결과를 간결하게 요약해주세요:
@@ -50,7 +43,8 @@ def trading_agent_node(state: AgentState) -> dict:
 
 투자자에게 전달할 매매 실행 요약 (100자 이내):"""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.2)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     summary = response.content
 
     log_agent("💹 매매 에이전트", f"매매 완료:\n{summary}")
@@ -75,7 +69,6 @@ def _execute_buy(target_stocks: list[dict], available_cash: int) -> list[dict]:
         return results
 
     per_stock_budget = min(MAX_TRADE_AMOUNT, available_cash // max(len(target_stocks), 1))
-
     for stock in target_stocks:
         code = stock.get("code", "")
         if not code:
@@ -88,16 +81,11 @@ def _execute_buy(target_stocks: list[dict], available_cash: int) -> list[dict]:
             quantity = per_stock_budget // current_price
             if quantity < 1:
                 continue
-            result = place_order(code, "buy", quantity, 0)  # 시장가 매수
+            result = place_order(code, "buy", quantity, 0)
             result["name"] = stock.get("name", "")
             results.append(result)
         except Exception as e:
-            results.append({
-                "success": False,
-                "code": code,
-                "name": stock.get("name", ""),
-                "message": str(e),
-            })
+            results.append({"success": False, "code": code, "name": stock.get("name", ""), "message": str(e)})
     return results
 
 
@@ -120,16 +108,11 @@ def _execute_sell(holdings: list[dict]) -> list[dict]:
         if not code or qty < 1:
             continue
         try:
-            result = place_order(code, "sell", qty, 0)  # 시장가 매도
+            result = place_order(code, "sell", qty, 0)
             result["name"] = holding.get("name", "")
             results.append(result)
         except Exception as e:
-            results.append({
-                "success": False,
-                "code": code,
-                "name": holding.get("name", ""),
-                "message": str(e),
-            })
+            results.append({"success": False, "code": code, "name": holding.get("name", ""), "message": str(e)})
     return results
 
 
@@ -138,8 +121,7 @@ def _format_trade_results(results: list[dict]) -> str:
         return "실행된 거래 없음"
     lines = []
     for r in results:
-        mode = r.get("mode", "")
-        if mode == "simulation":
+        if r.get("mode") == "simulation":
             lines.append(f"  [시뮬레이션] {r.get('action', '')} {r.get('name', '')}({r.get('code', '')})")
         else:
             status = "성공" if r.get("success") else "실패"
