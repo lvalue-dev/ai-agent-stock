@@ -1,9 +1,8 @@
 """뉴스/공시 분석 에이전트 - 시장 뉴스 및 기업 공시 분석"""
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage
 from graph.state import AgentState
 from tools.kis_api import get_stock_news, get_top_volume_stocks
-from config import GOOGLE_API_KEY, GEMINI_MODEL
+from utils.llm import create_llm, invoke_with_retry
 from utils.logger import log_agent
 
 
@@ -29,12 +28,6 @@ def news_analyst_node(state: AgentState) -> dict:
     news_text = _format_news(news_data)
     market_context = state.get("market_analysis", "")
 
-    llm = ChatGoogleGenerativeAI(
-        model=GEMINI_MODEL,
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.3,
-    )
-
     prompt = f"""당신은 한국 주식시장 전문 뉴스/공시 분석가입니다.
 주식 시장에 영향을 미치는 뉴스와 공시를 분석합니다.
 
@@ -53,7 +46,8 @@ def news_analyst_node(state: AgentState) -> dict:
 
 200-300자 이내로 핵심 분석을 제공해주세요."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    llm = create_llm(temperature=0.3)
+    response = invoke_with_retry(llm, [HumanMessage(content=prompt)])
     analysis = response.content
 
     log_agent("📰 뉴스 분석 에이전트", f"분석 완료:\n{analysis}")
