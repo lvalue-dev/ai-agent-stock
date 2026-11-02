@@ -13,7 +13,7 @@ st.set_page_config(
     page_title="한국 주식 멀티 에이전트",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",  # 모바일에서는 접힘 (펼치면 화면 전체를 가림)
 )
 
 st.markdown("""
@@ -112,6 +112,46 @@ def _safe_int(v, default=0) -> int:
     except Exception:
         return default
 
+
+# ── 차트 공통 설정 (모바일 터치 대응) ──────────────────────────────────
+# 기본 Plotly 는 드래그 = 박스 확대라서 터치에서 의도치 않게 확대되고,
+# 되돌리기 버튼은 마우스 호버 때만 보여 모바일에서 복구할 방법이 없다.
+# → 드래그는 좌우 이동(pan), 세로축 고정, 툴바 항상 표시, 더블탭/↺ 버튼으로 초기화.
+PLOTLY_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "scrollZoom": False,
+    "doubleClick": "reset",
+    "responsive": True,
+    "modeBarButtonsToRemove": [
+        "zoom2d", "select2d", "lasso2d", "autoScale2d", "toImage",
+        "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
+    ],
+    "locale": "ko",
+}
+
+
+def _render_chart(fig: go.Figure, key: str | None = None) -> None:
+    """모든 차트에 동일한 터치 동작을 적용해 그린다.
+
+    세로 막대: 좌우로만 이동, 세로축 고정. 가로 막대(orientation="h"): 상하로만 이동, 가로축 고정.
+    """
+    horizontal = bool(fig.data) and all(getattr(tr, "orientation", None) == "h" for tr in fig.data)
+    fig.update_layout(
+        dragmode="pan",
+        modebar=dict(orientation="h", bgcolor="rgba(15,23,42,0.6)", color="#94a3b8", activecolor="#60a5fa"),
+        hovermode="y unified" if horizontal else "x unified",
+    )
+    fig.update_xaxes(fixedrange=horizontal, automargin=True)
+    fig.update_yaxes(fixedrange=not horizontal, automargin=True)
+    # 막대가 많으면 좁은 화면에서 이름이 겹치므로 세로로 세운다
+    n = max((len(getattr(tr, "y" if horizontal else "x", None) or []) for tr in fig.data), default=0)
+    if n > 8 and not horizontal:
+        fig.update_xaxes(tickangle=-90, tickfont=dict(size=10))
+    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=key)
+    st.caption("드래그: 상하 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기" if horizontal else "드래그: 좌우 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기")
+
+
 # ── 메인 헤더 ────────────────────────────────────────────────────────
 st.markdown("# 📈 한국 주식 멀티 에이전트 대시보드")
 
@@ -165,7 +205,7 @@ with st.expander("⚡ 실시간 감시 현황", expanded=False):
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.8)",
                 margin=dict(l=10, r=10, t=40, b=10),
             )
-            st.plotly_chart(fig_rt, use_container_width=True)
+            _render_chart(fig_rt, key="rt_5m")
             st.dataframe(
                 [{
                     "종목": f"{r.get('name','')}({r.get('code','')})",
@@ -327,7 +367,7 @@ if st.session_state.results:
                 margin=dict(l=10, r=60, t=20, b=10),
                 font=dict(size=11),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            _render_chart(fig, key="top_volume")
         else:
             st.info("거래량 데이터 없음")
 
@@ -356,7 +396,7 @@ if st.session_state.results:
                 margin=dict(l=10, r=10, t=30, b=10),
                 font=dict(size=11),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            _render_chart(fig, key="inst_vs_frgn")
         else:
             st.info("기관/외국인 데이터 없음")
 
@@ -387,7 +427,7 @@ if st.session_state.results:
                 margin=dict(l=10, r=10, t=10, b=10),
                 font=dict(size=12),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            _render_chart(fig, key="screened_change")
 
     st.divider()
 
@@ -460,7 +500,7 @@ if st.session_state.results:
                     yaxis_title="거래량 증감률 (%)",
                     margin=dict(l=10, r=10, t=40, b=10),
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                _render_chart(fig2, key="vol_rate")
         with col_b:
             st.markdown(state.get("volume_analysis", "데이터 없음"))
 
@@ -488,7 +528,7 @@ if st.session_state.results:
                     margin=dict(l=10, r=10, t=40, b=10),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 )
-                st.plotly_chart(fig3, use_container_width=True)
+                _render_chart(fig3, key="inst_net")
         with col_b:
             st.markdown(state.get("institutional_analysis", "데이터 없음"))
 
