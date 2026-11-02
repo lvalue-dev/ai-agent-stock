@@ -115,48 +115,65 @@ def _safe_int(v, default=0) -> int:
 
 
 # ── 차트 공통 설정 (모바일 터치 대응) ──────────────────────────────────
-# 기본 Plotly 는 드래그 = 박스 확대라서 터치에서 의도치 않게 확대되고,
-# 되돌리기 버튼은 마우스 호버 때만 보여 모바일에서 복구할 방법이 없다.
-# → 드래그는 좌우 이동(pan), 세로축 고정, 툴바 항상 표시, 더블탭/↺ 버튼으로 초기화.
+# Plotly 의 드래그 확대/이동은 Streamlit·Plotly 버전과 터치 브라우저에 따라
+# 박스 확대로 동작하는 경우가 있어 아예 끈다. 드래그는 페이지 스크롤로만 쓰이고,
+# 막대가 많을 때는 구간 선택(알약 버튼)으로 넘겨 본다.
+CHART_PAGE_SIZE = 10
 PLOTLY_CONFIG = {
-    "displayModeBar": True,
+    "displayModeBar": False,
     "displaylogo": False,
     "scrollZoom": False,
-    "doubleClick": "reset",
+    "doubleClick": False,
     "responsive": True,
-    "modeBarButtonsToRemove": [
-        "zoom2d", "select2d", "lasso2d", "autoScale2d", "toImage",
-        "hoverClosestCartesian", "hoverCompareCartesian", "toggleSpikelines",
-    ],
-    "locale": "ko",
 }
-
 _PLOTLY_HAS_WIDTH = "width" in inspect.signature(st.plotly_chart).parameters
 
 
-def _render_chart(fig: go.Figure, key: str | None = None) -> None:
+def _render_chart(fig: go.Figure, key: str, page_size: int = CHART_PAGE_SIZE) -> None:
     """모든 차트에 동일한 터치 동작을 적용해 그린다.
 
-    세로 막대: 좌우로만 이동, 세로축 고정. 가로 막대(orientation="h"): 상하로만 이동, 가로축 고정.
+    - 드래그/휠/더블클릭 확대 전부 비활성화 (양 축 고정)
+    - 범주가 page_size 보다 많으면 구간 선택 버튼으로 이동, '전체' 로 한눈에 보기
     """
     horizontal = bool(fig.data) and all(getattr(tr, "orientation", None) == "h" for tr in fig.data)
+    cat_attr = "y" if horizontal else "x"
+    n = max((len(getattr(tr, cat_attr, None) or []) for tr in fig.data), default=0)
+
     fig.update_layout(
-        dragmode="pan",
-        modebar=dict(orientation="h", bgcolor="rgba(15,23,42,0.6)", color="#94a3b8", activecolor="#60a5fa"),
+        dragmode=False,
         hovermode="y unified" if horizontal else "x unified",
+        hoverlabel=dict(font_size=12),
     )
-    fig.update_xaxes(fixedrange=horizontal, automargin=True)
-    fig.update_yaxes(fixedrange=not horizontal, automargin=True)
-    # 막대가 많으면 좁은 화면에서 이름이 겹치므로 세로로 세운다
-    n = max((len(getattr(tr, "y" if horizontal else "x", None) or []) for tr in fig.data), default=0)
-    if n > 8 and not horizontal:
+    fig.update_xaxes(fixedrange=True, automargin=True)
+    fig.update_yaxes(fixedrange=True, automargin=True)
+
+    if n > page_size:
+        pages = [(i, min(i + page_size, n)) for i in range(0, n, page_size)]
+        labels = [f"{a + 1}–{b}" for a, b in pages] + ["전체"]
+        k = f"chart_{key}_page"
+        if hasattr(st, "pills"):   # Streamlit ≥ 1.40. 한 줄 알약 버튼이라 모바일에서도 가로로 유지됨
+            choice = st.pills("구간", labels, default=labels[0], key=k, label_visibility="collapsed")
+        else:
+            choice = st.radio("구간", labels, horizontal=True, key=k, label_visibility="collapsed")
+        if choice not in labels:   # pills 는 선택 해제가 가능 → 첫 구간으로
+            choice = labels[0]
+        if choice != "전체":
+            a, b = pages[labels.index(choice)]
+            rng = [a - 0.5, b - 0.5]
+            if horizontal:
+                fig.update_yaxes(range=rng)
+            else:
+                fig.update_xaxes(range=rng)
+        elif not horizontal:
+            fig.update_xaxes(tickangle=-90, tickfont=dict(size=10))  # 전체 보기 땐 이름이 겹치므로 세로로
+    elif n > 8 and not horizontal:
         fig.update_xaxes(tickangle=-90, tickfont=dict(size=10))
+
     # Streamlit 1.4x 는 width= 인자가 없어 use_container_width 로 대체 (구버전 호환)
     if _PLOTLY_HAS_WIDTH:
         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=key)
     else:
         st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG, key=key)
-    st.caption("드래그: 상하 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기" if horizontal else "드래그: 좌우 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기")
 
 
 # ── 메인 헤더 ────────────────────────────────────────────────────────
