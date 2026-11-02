@@ -5,6 +5,7 @@ import plotly.express as px
 from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
 from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH
+import inspect
 import json
 import os
 from utils.discord import send_report
@@ -130,6 +131,8 @@ PLOTLY_CONFIG = {
     "locale": "ko",
 }
 
+_PLOTLY_HAS_WIDTH = "width" in inspect.signature(st.plotly_chart).parameters
+
 
 def _render_chart(fig: go.Figure, key: str | None = None) -> None:
     """모든 차트에 동일한 터치 동작을 적용해 그린다.
@@ -148,7 +151,11 @@ def _render_chart(fig: go.Figure, key: str | None = None) -> None:
     n = max((len(getattr(tr, "y" if horizontal else "x", None) or []) for tr in fig.data), default=0)
     if n > 8 and not horizontal:
         fig.update_xaxes(tickangle=-90, tickfont=dict(size=10))
-    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=key)
+    # Streamlit 1.4x 는 width= 인자가 없어 use_container_width 로 대체 (구버전 호환)
+    if _PLOTLY_HAS_WIDTH:
+        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=key)
+    else:
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG, key=key)
     st.caption("드래그: 상하 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기" if horizontal else "드래그: 좌우 이동 · 두 번 탭 또는 🏠 버튼: 전체 보기")
 
 
