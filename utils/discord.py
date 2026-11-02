@@ -24,14 +24,16 @@ def send_report(state: dict) -> bool:
     market_analysis = _truncate(state.get("market_analysis", "N/A"), 500)
     news_analysis = _truncate(state.get("news_analysis", "N/A"), 500)
     screening_analysis = _truncate(state.get("screening_analysis", "N/A"), 500)
+    realtime_analysis = state.get("realtime_analysis", "")
+    event = state.get("trigger_event", {}) or {}
 
     payload = {
         "username": "주식 분석 에이전트",
         "avatar_url": "https://cdn-icons-png.flaticon.com/512/2910/2910791.png",
         "embeds": [
             {
-                "title": f"📊 한국 주식 멀티 에이전트 분석 보고서",
-                "description": f"분석 시각: {now}",
+                "title": ("⚡ 실시간 트리거 분석 보고서" if event else "📊 한국 주식 멀티 에이전트 분석 보고서"),
+                "description": f"분석 시각: {now}" + (f"\n트리거: {_truncate(event.get('summary', ''), 300)}" if event else ""),
                 "color": decision_color,
                 "fields": [
                     {"name": "✅ 최종 결정", "value": f"**{final_decision}**", "inline": True},
@@ -39,6 +41,7 @@ def send_report(state: dict) -> bool:
                     {"name": "📊 시장 분석", "value": market_analysis, "inline": False},
                     {"name": "📰 뉴스 분석", "value": news_analysis, "inline": False},
                     {"name": "🔍 종목 스크리닝", "value": screening_analysis, "inline": False},
+                    *([{"name": "⚡ 실시간 분석", "value": _truncate(realtime_analysis, 500), "inline": False}] if realtime_analysis else []),
                     {"name": "💹 매매 실행 결과", "value": trade_text, "inline": False},
                 ],
                 "footer": {"text": "한국 주식 멀티 에이전트 시스템"},

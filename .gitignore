@@ -1,0 +1,5 @@
+data/realtime_snapshot.json*
+__pycache__/
+*.pyc
+.env
+.pytest_cache/

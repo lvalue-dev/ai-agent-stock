@@ -7,13 +7,19 @@ from utils.logger import log_agent
 
 
 def _all_analyses(state: AgentState) -> str:
-    return (
+    text = (
         f"[📊 시장 분석가]\n{state.get('market_analysis', '분석 없음')}\n\n"
         f"[📰 뉴스 분석가]\n{state.get('news_analysis', '분석 없음')}\n\n"
         f"[🔍 스크리닝 에이전트]\n{state.get('screening_analysis', '분석 없음')}\n\n"
         f"[📈 거래량 분석가]\n{state.get('volume_analysis', '분석 없음')}\n\n"
         f"[🏦 기관/외국인 분석가]\n{state.get('institutional_analysis', '분석 없음')}"
     )
+    realtime = state.get("realtime_analysis", "")
+    if realtime:
+        event = state.get("trigger_event", {}) or {}
+        trigger = f"(트리거: {event.get('summary', '')})\n" if event.get("summary") else ""
+        text += f"\n\n[⚡ 실시간 분석가]\n{trigger}{realtime}"
+    return text
 
 
 def supervisor_node(state: AgentState) -> dict:

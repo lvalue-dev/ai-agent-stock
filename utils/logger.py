@@ -44,6 +44,15 @@ def print_final_report(state: dict) -> None:
     print("-" * 40)
     print(state.get("screening_analysis", "N/A"))
 
+    if state.get("realtime_analysis"):
+        print(f"\n{'='*60}")
+        print("⚡ 실시간 분석")
+        print("-" * 40)
+        event = state.get("trigger_event", {}) or {}
+        if event.get("summary"):
+            print(f"트리거: {event['summary']}")
+        print(state.get("realtime_analysis", ""))
+
     print(f"\n{'='*60}")
     print("💬 토론 기록")
     print("-" * 40)

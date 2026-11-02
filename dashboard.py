@@ -4,7 +4,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
-from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL
+from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH
+import json
+import os
 from utils.discord import send_report
 
 st.set_page_config(
@@ -46,7 +48,8 @@ with st.sidebar:
         ("🔍", "스크리닝", "유망 종목 발굴"),
         ("📈", "거래량", "패턴·모멘텀"),
         ("🏦", "기관/외국인", "스마트머니 동향"),
-        ("🎯", "수퍼바이저", "5자 토론·결정"),
+        ("⚡", "실시간", "웹소켓 체결·호가 신호"),
+        ("🎯", "수퍼바이저", "토론·결정"),
     ]:
         st.markdown(f"{e} **{n}** — _{d}_")
     st.divider()
@@ -63,13 +66,14 @@ AGENT_META = {
     "stock_screener":      ("🔍", "스크리닝"),
     "volume_agent":        ("📈", "거래량 분석"),
     "institutional_agent": ("🏦", "기관/외국인"),
+    "realtime_agent":      ("⚡", "실시간"),
     "supervisor":          ("🎯", "수퍼바이저"),
     "debate_agents":       ("💬", "토론"),
     "finalize":            ("✅", "최종 결정"),
 }
 
 PIPELINE = ["market_analyst", "news_analyst", "stock_screener",
-            "volume_agent", "institutional_agent", "supervisor", "finalize"]
+            "volume_agent", "institutional_agent", "realtime_agent", "supervisor", "finalize"]
 
 
 def _node_content(node_name: str, state: dict) -> str:
@@ -79,6 +83,7 @@ def _node_content(node_name: str, state: dict) -> str:
         "stock_screener": "screening_analysis",
         "volume_agent": "volume_analysis",
         "institutional_agent": "institutional_analysis",
+        "realtime_agent": "realtime_analysis",
         "supervisor": "supervisor_opinion",
     }
     if node_name in mapping:
@@ -116,6 +121,72 @@ with col_btn:
 with col_ts:
     if st.session_state.ran_at:
         st.caption(f"마지막 분석: {st.session_state.ran_at}")
+
+# ── 실시간 감시 현황 (python main.py --realtime 이 쓰는 스냅샷) ─────────
+def _load_realtime_snapshot() -> dict | None:
+    try:
+        if os.path.exists(REALTIME_SNAPSHOT_PATH):
+            with open(REALTIME_SNAPSHOT_PATH, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        return None
+    return None
+
+
+with st.expander("⚡ 실시간 감시 현황", expanded=False):
+    rt = _load_realtime_snapshot()
+    if not rt:
+        st.caption(f"`python main.py --realtime` 를 실행하면 `{REALTIME_SNAPSHOT_PATH}` 에 스냅샷이 기록되고 여기에 표시됩니다.")
+    else:
+        if st.button("🔄 새로고침", key="rt_refresh"):
+            st.rerun()
+        stats = rt.get("stats", {})
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("연결", "🟢 연결됨" if rt.get("connected") else "🔴 끊김")
+        c2.metric("감시 종목", len(rt.get("watchlist", [])))
+        c3.metric("수신 체결", f"{stats.get('ticks', 0):,}")
+        c4.metric("에이전트 실행", rt.get("trigger_count", 0))
+        c5.metric("갱신", (rt.get("updated_at") or "")[11:19])
+
+        rows = rt.get("snapshot", [])
+        if rows:
+            names = [f"{r.get('name','')[:6]}" for r in rows[:15]]
+            pcts = [_safe_float(r.get("pct_5m", 0)) for r in rows[:15]]
+            fig_rt = go.Figure(go.Bar(
+                x=names, y=pcts,
+                marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in pcts],
+                text=[f"{v:+.2f}%" for v in pcts], textposition="outside",
+                customdata=[[r.get("vol_ratio_1m", 0), r.get("strength", 0)] for r in rows[:15]],
+                hovertemplate="%{x}<br>5분 변동 %{y:+.2f}%<br>거래량비 %{customdata[0]:.1f}x · 체결강도 %{customdata[1]:.0f}<extra></extra>",
+            ))
+            fig_rt.add_hline(y=0, line_dash="dash", line_color="#475569")
+            fig_rt.update_layout(
+                title="감시 종목 5분 변동률", height=280, template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.8)",
+                margin=dict(l=10, r=10, t=40, b=10),
+            )
+            st.plotly_chart(fig_rt, use_container_width=True)
+            st.dataframe(
+                [{
+                    "종목": f"{r.get('name','')}({r.get('code','')})",
+                    "현재가": r.get("price", 0),
+                    "전일比(%)": r.get("change_rate", 0),
+                    "1분(%)": r.get("pct_1m", 0),
+                    "5분(%)": r.get("pct_5m", 0),
+                    "거래량비(1분)": r.get("vol_ratio_1m", 0),
+                    "체결강도": r.get("strength", 0),
+                    "매수비중5분(%)": r.get("buy_ratio_5m", 0),
+                    "호가불균형": r.get("imbalance", 0),
+                    "시각": r.get("time", ""),
+                } for r in rows],
+                use_container_width=True, hide_index=True,
+            )
+        sigs = rt.get("signals", [])
+        if sigs:
+            st.markdown("**최근 신호**")
+            for sg in sigs[:10]:
+                t = datetime.fromtimestamp(sg.get("at", 0)).strftime("%H:%M:%S") if sg.get("at") else ""
+                st.markdown(f"- `{t}` **{sg.get('label','')}** — {sg.get('message','')}")
 
 # ── 실행 ──────────────────────────────────────────────────────────────
 if run_clicked:
@@ -328,6 +399,7 @@ if st.session_state.results:
         "🔍 스크리닝",
         "📈 거래량",
         "🏦 기관/외국인",
+        "⚡ 실시간",
         "🗣️ 토론 기록",
     ])
 
@@ -421,6 +493,17 @@ if st.session_state.results:
             st.markdown(state.get("institutional_analysis", "데이터 없음"))
 
     with tabs[6]:
+        st.subheader("⚡ 실시간 분석 결과")
+        event = state.get("trigger_event", {}) or {}
+        if event.get("summary"):
+            st.info(f"트리거 ({event.get('at','')}): {event['summary']}")
+        rt_text = state.get("realtime_analysis", "")
+        if rt_text:
+            st.markdown(rt_text)
+        else:
+            st.info("정기 분석에서는 실시간 데이터가 없습니다. `python main.py --realtime` 로 트리거된 분석에서 채워집니다.")
+
+    with tabs[7]:
         st.subheader("🗣️ 에이전트 토론 기록")
         debate_log = state.get("debate_log", [])
         if debate_log:
@@ -440,7 +523,7 @@ else:
     flow = [
         ("📊", "시장분석"), ("➡️", ""), ("📰", "뉴스\n(Google)"), ("➡️", ""),
         ("🔍", "스크리닝"), ("➡️", ""), ("📈", "거래량"), ("➡️", ""),
-        ("🏦", "기관/외국인"), ("➡️", ""), ("🎯", "5자 토론"), ("➡️", ""), ("✅", "결정"),
+        ("🏦", "기관/외국인"), ("➡️", ""), ("⚡", "실시간"), ("➡️", ""), ("🎯", "토론"), ("➡️", ""), ("✅", "결정"),
     ]
     cols = st.columns(len(flow))
     for i, (e, l) in enumerate(flow):

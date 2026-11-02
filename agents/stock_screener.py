@@ -12,22 +12,33 @@ def stock_screener_node(state: AgentState) -> dict:
     market_analysis = state.get("market_analysis", "")
     news_analysis = state.get("news_analysis", "")
 
+    trigger_event = state.get("trigger_event", {}) or {}
+    trigger_stocks = trigger_event.get("stocks", [])
+
     kospi_stocks = get_top_volume_stocks("KOSPI", limit=10)
     kosdaq_stocks = get_top_volume_stocks("KOSDAQ", limit=10)
     all_stocks = kospi_stocks + kosdaq_stocks
 
+    # 실시간 트리거 종목을 상세 분석 후보 맨 앞에 두고, 나머지는 거래량 상위로 채운다
     detailed_stocks = []
-    for stock in all_stocks[:5]:
+    seen = set()
+    candidates = [{"code": s.get("code", ""), "trigger": True} for s in trigger_stocks[:3]] + all_stocks
+    for stock in candidates:
+        if len(detailed_stocks) >= 5 + min(len(trigger_stocks), 3):
+            break
         code = stock.get("code", "")
-        if code:
-            try:
-                detail = get_stock_price(code)
-                detail["volume_rank"] = stock.get("rank", "")
-                detail["volume_rate"] = stock.get("volume_rate", "")
-                detail["market"] = "KOSPI" if stock in kospi_stocks else "KOSDAQ"
-                detailed_stocks.append(detail)
-            except Exception:
-                pass
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        try:
+            detail = get_stock_price(code)
+            detail["volume_rank"] = stock.get("rank", "")
+            detail["volume_rate"] = stock.get("volume_rate", "")
+            detail["market"] = "KOSPI" if stock in kospi_stocks else ("KOSDAQ" if stock in kosdaq_stocks else "")
+            detail["trigger"] = stock.get("trigger", False)
+            detailed_stocks.append(detail)
+        except Exception:
+            pass
 
     stocks_text = _format_detailed_stocks(detailed_stocks)
     candidate_list = _format_candidates(all_stocks)
@@ -41,7 +52,10 @@ def stock_screener_node(state: AgentState) -> dict:
 [뉴스 분석]
 {news_analysis}
 
-[상세 데이터 종목 (거래량 상위 5종목)]
+[실시간 트리거]
+{trigger_event.get("summary") or "없음 (정기 분석)"}
+
+[상세 데이터 종목 (실시간 트리거 종목 + 거래량 상위)]
 {stocks_text}
 
 [전체 거래량 상위 후보군]
@@ -81,8 +95,9 @@ def _format_detailed_stocks(stocks: list[dict]) -> str:
         return "데이터 없음"
     lines = []
     for s in stocks:
+        flag = " ⚡트리거" if s.get("trigger") else ""
         lines.append(
-            f"- {s.get('name', '')}({s.get('code', '')}) [{s.get('market', '')}]\n"
+            f"- {s.get('name', '')}({s.get('code', '')}) [{s.get('market', '')}]{flag}\n"
             f"  현재가: {s.get('price', '')}원 | 등락률: {s.get('change_rate', '')}%\n"
             f"  PER: {s.get('per', '')} | PBR: {s.get('pbr', '')} | 시총: {s.get('market_cap', '')}억\n"
             f"  52주 최고: {s.get('52w_high', '')} | 최저: {s.get('52w_low', '')}\n"

@@ -25,7 +25,13 @@ class AgentState(TypedDict):
     debate_log: list[str]
     consensus_reached: bool
 
+    # 실시간 (웹소켓 트리거 모드에서만 채워짐)
+    trigger_event: dict              # 트리거 이벤트 {at, signals, codes, stocks, summary, snapshot, focus}
+    realtime_snapshot: list[dict]    # 종목별 실시간 요약 (TickBuffer.snapshot)
+    realtime_analysis: str
+
     # 최종 판단
     final_decision: str
     target_stocks: list[dict]
     supervisor_opinion: str
+    trade_results: list[dict]
