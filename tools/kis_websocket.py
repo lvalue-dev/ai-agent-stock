@@ -1,7 +1,9 @@
 """한국투자증권 KIS 실시간 WebSocket 클라이언트
 
-- H0STCNT0: 국내주식 실시간 체결가
-- H0STASP0: 국내주식 실시간 호가
+체결가 / 호가 tr_id 는 시장 구분(KIS_MARKET)에 따라 고른다.
+  J  (KRX 정규장)      : H0STCNT0 / H0STASP0
+  NX (넥스트레이드)     : H0NXCNT0 / H0NXASP0
+  UN (KRX+NXT 통합)    : H0UNCNT0 / H0UNASP0  ← 프리마켓(08:00~)·애프터마켓(~20:00) 포함
 
 메시지 형식
   데이터:   "0|H0STCNT0|001|필드1^필드2^..."   (첫 글자 0=평문, 1=암호화)
@@ -12,20 +14,29 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field, asdict
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
+
+KST = timezone(timedelta(hours=9))
 
 import requests
 import websocket
 
 from config import (
-    KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, KIS_WS_URL,
+    KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, KIS_WS_URL, KIS_MARKET,
     REALTIME_MAX_SUBSCRIPTIONS,
 )
 
 log = logging.getLogger(__name__)
 
-TR_TRADE = "H0STCNT0"      # 실시간 체결가
-TR_ORDERBOOK = "H0STASP0"  # 실시간 호가
+MARKET_TR_IDS = {
+    "J":  ("H0STCNT0", "H0STASP0"),
+    "NX": ("H0NXCNT0", "H0NXASP0"),
+    "UN": ("H0UNCNT0", "H0UNASP0"),
+}
+TRADE_TR_IDS = {v[0] for v in MARKET_TR_IDS.values()}
+ORDERBOOK_TR_IDS = {v[1] for v in MARKET_TR_IDS.values()}
+TR_TRADE, TR_ORDERBOOK = MARKET_TR_IDS.get(KIS_MARKET, MARKET_TR_IDS["UN"])
 
 # KIS 문서 순서 그대로 (H0STCNT0, 46개 필드)
 TRADE_FIELDS = [
@@ -56,7 +67,12 @@ ORDERBOOK_FIELDS = (
     ]
 )
 
-FIELD_COUNT = {TR_TRADE: len(TRADE_FIELDS), TR_ORDERBOOK: len(ORDERBOOK_FIELDS)}
+def _field_names(tr_id: str) -> Optional[list[str]]:
+    if tr_id in TRADE_TR_IDS:
+        return TRADE_FIELDS
+    if tr_id in ORDERBOOK_TR_IDS:
+        return ORDERBOOK_FIELDS
+    return None
 
 
 def _int(v: str, default: int = 0) -> int:
@@ -101,8 +117,40 @@ class Tick:
     halted: bool = False
     received_at: float = field(default_factory=time.time)
 
+    @property
+    def session(self) -> str:
+        return market_session(self.time)
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d["session"] = self.session
+        return d
+
+
+# ── 장 구분 ─────────────────────────────────────────────────────────
+SESSIONS = [
+    # (시작 HHMM, 끝 HHMM, 라벨)
+    (800, 850, "프리마켓"),        # NXT 프리마켓
+    (850, 900, "동시호가"),        # KRX 장전 동시호가 (NXT 는 08:50 종료)
+    (900, 1530, "정규장"),
+    (1530, 1540, "장마감 동시호가"),
+    (1540, 1600, "애프터마켓"),     # NXT 애프터마켓 (15:40~20:00) + KRX 시간외 종가(15:40~16:00)
+    (1600, 1800, "애프터마켓"),     # KRX 시간외 단일가 (16:00~18:00) 와 겹침
+    (1800, 2000, "애프터마켓"),
+]
+
+
+def market_session(hhmmss: str = "", now: Optional[datetime] = None) -> str:
+    """체결 시각(HHMMSS) 또는 현재 KST 기준 장 구분 라벨"""
+    if hhmmss and len(hhmmss) >= 4 and hhmmss[:4].isdigit():
+        hhmm = int(hhmmss[:4])
+    else:
+        now = now or datetime.now(KST)
+        hhmm = now.hour * 100 + now.minute
+    for start, end, label in SESSIONS:
+        if start <= hhmm < end:
+            return label
+    return "장외"
 
 
 @dataclass
@@ -197,20 +245,21 @@ def parse_message(raw: str) -> tuple[str, list]:
         # 체결가/호가는 평문. 암호화 데이터(체결통보 등)는 이 클라이언트 범위 밖
         raise ValueError(f"암호화된 메시지는 지원하지 않습니다: {tr_id}")
 
-    n_fields = FIELD_COUNT.get(tr_id)
-    if not n_fields:
+    names = _field_names(tr_id)
+    if not names:
         return tr_id, []
 
-    names = TRADE_FIELDS if tr_id == TR_TRADE else ORDERBOOK_FIELDS
     values = payload.split("^")
-    count = _int(count_str, 1) or 1
+    count = max(_int(count_str, 1), 1)
+    # 통합/NXT 스트림은 필드가 뒤에 더 붙을 수 있으므로 레코드 길이는 실제 값 수로 계산
+    n_fields = max(len(values) // count, 1)
     records = []
     for i in range(count):
         chunk = values[i * n_fields:(i + 1) * n_fields]
         if len(chunk) < 3:
             break
         fields = dict(zip(names, chunk))
-        if tr_id == TR_TRADE:
+        if tr_id in TRADE_TR_IDS:
             records.append(parse_trade_record(fields))
         else:
             records.append(parse_orderbook_record(fields))
@@ -390,10 +439,10 @@ class KISWebSocketClient:
         if message and message[0] in ("0", "1"):
             tr_id, records = parse_message(message)
             for rec in records:
-                if tr_id == TR_TRADE:
+                if tr_id in TRADE_TR_IDS:
                     self.stats["ticks"] += 1
                     self.on_tick(rec)
-                elif tr_id == TR_ORDERBOOK and self.on_orderbook:
+                elif tr_id in ORDERBOOK_TR_IDS and self.on_orderbook:
                     self.stats["orderbooks"] += 1
                     self.on_orderbook(rec)
             return

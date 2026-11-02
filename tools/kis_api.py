@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from config import (
     KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO,
-    KIS_ACCOUNT_PROD_CODE, KIS_BASE_URL, KIS_MODE
+    KIS_ACCOUNT_PROD_CODE, KIS_BASE_URL, KIS_MODE, KIS_MARKET
 )
 
 
@@ -49,6 +49,36 @@ def _headers(tr_id: str, custom_headers: Optional[dict] = None) -> dict:
     return h
 
 
+def _quote(path: str, tr_id: str, params: dict, market: str = KIS_MARKET) -> dict:
+    """시세 조회 공통. 통합(UN)/NXT 조회가 거부되면 KRX(J)로 한 번 더 시도한다.
+
+    NXT 미신청 계좌나 NXT 비거래 종목은 rt_cd != 0 으로 돌아오므로 정규장 데이터로 폴백.
+    """
+    def call(mkt: str) -> dict:
+        resp = requests.get(
+            f"{KIS_BASE_URL}{path}",
+            headers=_headers(tr_id),
+            params={**params, "FID_COND_MRKT_DIV_CODE": mkt},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    try:
+        data = call(market)
+        if data.get("rt_cd", "0") == "0" and (data.get("output") or data.get("output2") or data.get("output1")):
+            data["_market"] = market
+            return data
+        if market == "J":
+            return data
+    except requests.RequestException:
+        if market == "J":
+            raise
+    data = call("J")
+    data["_market"] = "J"
+    return data
+
+
 def get_market_index(market: str = "KOSPI") -> dict:
     """코스피/코스닥 지수 조회"""
     code_map = {"KOSPI": "0001", "KOSDAQ": "1001"}
@@ -77,18 +107,16 @@ def get_market_index(market: str = "KOSPI") -> dict:
 
 
 def get_stock_price(stock_code: str) -> dict:
-    """개별 종목 현재가 조회"""
-    resp = requests.get(
-        f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
-        headers=_headers("FHKST01010100"),
-        params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
-        timeout=10,
+    """개별 종목 현재가 조회 (KIS_MARKET=UN 이면 프리/애프터마켓 NXT 체결가 포함)"""
+    data = _quote(
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "FHKST01010100",
+        {"FID_INPUT_ISCD": stock_code},
     )
-    resp.raise_for_status()
-    data = resp.json()
     output = data.get("output", {})
     return {
         "code": stock_code,
+        "market": data.get("_market", "J"),
         "name": output.get("hts_kor_isnm", ""),
         "price": output.get("stck_prpr", "N/A"),
         "change": output.get("prdy_vrss", "N/A"),
@@ -143,15 +171,14 @@ def get_top_volume_stocks(market: str = "KOSPI", limit: int = 10) -> list[dict]:
 def get_investor_trading(stock_code: str) -> dict:
     """종목별 투자자 매매동향 (기관/외국인/개인)"""
     try:
-        resp = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
-            headers=_headers("FHKST01010900"),
-            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
-            timeout=10,
+        data = _quote(
+            "/uapi/domestic-stock/v1/quotations/inquire-investor",
+            "FHKST01010900",
+            {"FID_INPUT_ISCD": stock_code},
         )
-        resp.raise_for_status()
-        data = resp.json()
         output = data.get("output", {})
+        if isinstance(output, list):   # 투자자 동향은 일자별 리스트로 오기도 함
+            output = output[0] if output else {}
         return {
             "code": stock_code,
             "individual_net_buy": output.get("prsn_ntby_qty", "0"),
@@ -170,21 +197,16 @@ def get_investor_trading(stock_code: str) -> dict:
 def get_daily_volume(stock_code: str, days: int = 10) -> list[dict]:
     """최근 N일 거래량 추이 조회"""
     try:
-        today = datetime.now().strftime("%Y%m%d")
-        resp = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price",
-            headers=_headers("FHKST03010100"),
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
+        data = _quote(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            "FHKST03010100",
+            {
                 "FID_INPUT_ISCD": stock_code,
                 "FID_PERIOD_DIV_CODE": "D",
                 "FID_ORG_ADJ_PRC": "0",
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        output = data.get("output2", [])[:days]
+        output = (data.get("output2") or data.get("output") or [])[:days]
         return [
             {
                 "date": item.get("stck_bsop_date", ""),

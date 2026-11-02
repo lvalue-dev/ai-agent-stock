@@ -206,7 +206,8 @@ with st.expander("⚡ 실시간 감시 현황", expanded=False):
             st.rerun()
         stats = rt.get("stats", {})
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("연결", "🟢 연결됨" if rt.get("connected") else "🔴 끊김")
+        c1.metric("연결", ("🟢 " if rt.get("connected") else "🔴 ") + (rt.get("session") or ("연결됨" if rt.get("connected") else "끊김")),
+                  help=f"시장 {rt.get('market', '')} · {rt.get('tr_id', '')}")
         c2.metric("감시 종목", len(rt.get("watchlist", [])))
         c3.metric("수신 체결", f"{stats.get('ticks', 0):,}")
         c4.metric("에이전트 실행", rt.get("trigger_count", 0))
@@ -241,6 +242,7 @@ with st.expander("⚡ 실시간 감시 현황", expanded=False):
                     "체결강도": r.get("strength", 0),
                     "매수비중5분(%)": r.get("buy_ratio_5m", 0),
                     "호가불균형": r.get("imbalance", 0),
+                    "장": r.get("session", ""),
                     "시각": r.get("time", ""),
                 } for r in rows],
                 use_container_width=True, hide_index=True,

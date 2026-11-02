@@ -56,11 +56,15 @@ class SignalDetector:
         if not summary or summary.get("halted"):
             return []
         code, name = summary["code"], summary.get("name", "")
+        session = summary.get("session", "")
         out: list[Signal] = []
 
         def emit(kind: str, label: str, score: float, message: str, **data) -> None:
             if self._ready(code, kind, now):
                 self._fire(code, kind, now)
+                if session and session != "정규장":
+                    message = f"[{session}] {message}"
+                data["session"] = session
                 out.append(Signal(kind, label, code, name, round(score, 2), message, data, now))
 
         # 1) 단기 급등/급락 (5분 변동)

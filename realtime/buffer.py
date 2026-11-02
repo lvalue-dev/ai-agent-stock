@@ -103,6 +103,7 @@ class TickBuffer:
             "code": code,
             "name": self._names.get(code, ""),
             "time": last.time,
+            "session": last.session,
             "price": last.price,
             "change": last.change,
             "change_rate": last.change_rate,          # 전일 대비 (%)

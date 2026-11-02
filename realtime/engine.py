@@ -16,7 +16,8 @@ from config import (
     WATCHLIST, WATCHLIST_AUTO_LIMIT, REALTIME_MAX_SUBSCRIPTIONS, REALTIME_ORDERBOOK,
     REALTIME_TRIGGER_COOLDOWN_SEC, REALTIME_BATCH_WINDOW_SEC, REALTIME_SNAPSHOT_PATH,
 )
-from tools.kis_websocket import KISWebSocketClient, Tick, OrderBook
+from tools.kis_websocket import KISWebSocketClient, Tick, OrderBook, market_session, TR_TRADE
+from config import KIS_MARKET
 from realtime.buffer import TickBuffer
 from realtime.signals import Signal, SignalDetector
 
@@ -190,6 +191,7 @@ class RealtimeEngine:
                 codes.append(s.code)
         return {
             "at": datetime.now().isoformat(timespec="seconds"),
+            "session": market_session(),
             "signals": [s.to_dict() for s in signals],
             "codes": codes,
             "stocks": [{"code": c, "name": self.buffer.name(c)} for c in codes],
@@ -204,6 +206,9 @@ class RealtimeEngine:
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "started_at": datetime.fromtimestamp(self.started_at).isoformat(timespec="seconds") if self.started_at else None,
             "connected": self.client.connected.is_set(),
+            "market": KIS_MARKET,
+            "tr_id": TR_TRADE,
+            "session": market_session(),
             "watchlist": self.watchlist,
             "stats": dict(self.client.stats),
             "trigger_count": self.trigger_count,

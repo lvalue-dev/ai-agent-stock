@@ -210,3 +210,44 @@ def test_engine_triggers_once_per_cooldown(tmp_path):
     snap = json.loads((tmp_path / "snap.json").read_text(encoding="utf-8"))
     assert snap["trigger_count"] == 1 and snap["snapshot"][0]["code"] == "005930"
     assert snap["signals"][0]["kind"] == "price_spike"
+
+
+# ── 통합(KRX+NXT) 스트림 / 장 구분 ───────────────────────────────────
+def test_parse_unified_trade_with_extra_trailing_fields():
+    from tools.kis_websocket import TRADE_TR_IDS, MARKET_TR_IDS
+    assert MARKET_TR_IDS["UN"] == ("H0UNCNT0", "H0UNASP0") and "H0UNCNT0" in TRADE_TR_IDS
+    # 통합 스트림은 필드가 더 붙을 수 있다 → 레코드 2건 + 각 2개 추가 필드
+    rec = _trade_payload(STCK_CNTG_HOUR="081512") + "^X^Y"
+    rec2 = _trade_payload(MKSC_SHRN_ISCD="000660", STCK_CNTG_HOUR="081513") + "^X^Y"
+    tr_id, recs = parse_message(f"0|H0UNCNT0|002|{rec}^{rec2}")
+    assert tr_id == "H0UNCNT0" and [r.code for r in recs] == ["005930", "000660"]
+    assert recs[0].price == 71000 and recs[0].session == "프리마켓"
+    assert recs[0].to_dict()["session"] == "프리마켓"
+
+
+def test_market_session_labels():
+    from tools.kis_websocket import market_session
+    assert market_session("080000") == "프리마켓"
+    assert market_session("084959") == "프리마켓"
+    assert market_session("085500") == "동시호가"
+    assert market_session("093000") == "정규장"
+    assert market_session("153500") == "장마감 동시호가"
+    assert market_session("170000") == "애프터마켓"
+    assert market_session("195959") == "애프터마켓"
+    assert market_session("200000") == "장외"
+    assert market_session("073000") == "장외"
+
+
+def test_signal_message_carries_session():
+    det = SignalDetector(price_spike_pct=2.0, cooldown_sec=0, min_history_sec=0)
+    sig = det.evaluate(_summary(pct_5m=3.0, session="프리마켓"), now=1000)[0]
+    assert sig.message.startswith("[프리마켓]") and sig.data["session"] == "프리마켓"
+    sig2 = det.evaluate(_summary(code="000660", pct_5m=3.0, session="정규장"), now=1000)[0]
+    assert not sig2.message.startswith("[") and sig2.data["session"] == "정규장"
+
+
+def test_client_dispatches_unified_trade():
+    ticks = []
+    client = KISWebSocketClient(on_tick=ticks.append, approval_key_provider=lambda: "k")
+    client.handle_message(f"0|H0UNCNT0|001|{_trade_payload()}")
+    assert len(ticks) == 1 and ticks[0].code == "005930"

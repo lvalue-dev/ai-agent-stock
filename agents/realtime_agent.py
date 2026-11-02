@@ -25,7 +25,8 @@ def realtime_agent_node(state: AgentState) -> dict:
     prompt = f"""당신은 한국 주식 실시간 체결 데이터를 읽는 단기 트레이딩 애널리스트입니다.
 웹소켓으로 수신한 체결가·거래량·체결강도·호가 데이터와 규칙 기반 신호를 해석합니다.
 
-[발생 시각] {event.get('at', '')}
+[발생 시각] {event.get('at', '')}  [장 구분] {event.get('session', '') or '정규장'}
+(프리마켓·애프터마켓은 넥스트레이드(NXT) 체결로 유동성이 얇아 소량 체결에도 가격이 크게 움직일 수 있음을 감안)
 
 [감지된 신호]
 {signals_text}

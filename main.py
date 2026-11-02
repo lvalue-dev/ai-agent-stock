@@ -16,7 +16,7 @@ from utils.logger import print_separator, print_final_report
 from utils.discord import send_report
 from config import (
     KIS_APP_KEY, GOOGLE_API_KEY, GROQ_API_KEY, LLM_PROVIDER, KIS_MODE,
-    AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL,
+    AUTO_TRADE_ENABLED, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, KIS_MARKET,
     REALTIME_ORDERBOOK, REALTIME_TRIGGER_COOLDOWN_SEC, REALTIME_PRICE_SPIKE_PCT,
     REALTIME_VOLUME_SURGE_RATIO,
 )
@@ -55,6 +55,7 @@ def print_startup_info(realtime: bool = False):
 ⚙️  설정:
   - LLM: {LLM_PROVIDER.upper()} ({'Groq - llama-3.3-70b' if LLM_PROVIDER == 'groq' else 'Google Gemini 2.0 Flash'})
   - KIS 모드: {KIS_MODE.upper()} ({'실전 투자' if KIS_MODE == 'real' else '모의 투자'})
+  - 시세 시장: {KIS_MARKET} ({ {'J': 'KRX 정규장만', 'NX': '넥스트레이드만', 'UN': 'KRX+NXT 통합 (프리마켓 08:00~ / 애프터마켓 ~20:00 포함)'}[KIS_MARKET] })
   - 자동 매매: {'활성화' if AUTO_TRADE_ENABLED else '비활성화 (시뮬레이션)'}
   - 최대 토론 라운드: {MAX_DEBATE_ROUNDS}회
   - 실행 모드: {'실시간 (웹소켓 트리거)' if realtime else '1회 분석'}
@@ -108,7 +109,7 @@ def run_realtime(watch: list[str] | None, orderbook: bool, dry_run: bool):
           f" | 에이전트 재실행 간격 {REALTIME_TRIGGER_COOLDOWN_SEC}초")
 
     def on_trigger(event: dict):
-        print_separator(f"⚡ 실시간 트리거 {event.get('at', '')}")
+        print_separator(f"⚡ 실시간 트리거 {event.get('at', '')} [{event.get('session', '')}]")
         for s in event.get("signals", []):
             print(f"  • [{s.get('label')}] {s.get('message')}")
         print("\n🚀 멀티 에이전트 분석 시작...\n")

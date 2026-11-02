@@ -27,6 +27,11 @@ KIS_BASE_URL = (
     else "https://openapivts.koreainvestment.com:29443"
 )
 
+# 시세 조회 시장 구분: J=KRX 정규장만, NX=넥스트레이드만, UN=KRX+NXT 통합 (프리/애프터마켓 포함)
+KIS_MARKET = os.getenv("KIS_MARKET", "UN").upper()
+if KIS_MARKET not in ("J", "NX", "UN"):
+    KIS_MARKET = "UN"
+
 # 에이전트 설정
 MAX_DEBATE_ROUNDS = int(os.getenv("MAX_DEBATE_ROUNDS", "3"))
 AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "false").lower() == "true"

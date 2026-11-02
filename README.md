@@ -46,11 +46,19 @@ python main.py --realtime --dry-run
 streamlit run dashboard.py
 ```
 
+## 프리마켓 / 애프터마켓
+
+기본값 `KIS_MARKET=UN` 은 한국투자 KRX+넥스트레이드(NXT) 통합 시세를 씁니다.
+REST 현재가·투자자동향·일별시세는 시장구분 `UN`, 웹소켓은 `H0UNCNT0`(체결)·`H0UNASP0`(호가)로 구독하므로
+NXT 프리마켓(08:00~08:50)과 애프터마켓(15:40~20:00) 체결이 실시간으로 들어옵니다.
+NXT 를 신청하지 않은 계좌나 NXT 비거래 종목은 자동으로 KRX(`J`) 조회로 폴백합니다.
+틱·신호·스냅샷에는 `session` 라벨(프리마켓/동시호가/정규장/애프터마켓)이 붙습니다.
+
 ## 실시간 동작
 
 1. `/oauth2/Approval` 로 웹소켓 접속키를 받고 `ws://ops.koreainvestment.com:21000` 에 연결합니다.
    (모의투자는 `:31000`)
-2. 감시 종목의 체결가(H0STCNT0)를 구독합니다. `--orderbook` 이면 호가(H0STASP0)도 구독합니다.
+2. 감시 종목의 체결가(통합 H0UNCNT0, KRX 전용이면 H0STCNT0)를 구독합니다. `--orderbook` 이면 호가도 구독합니다.
    KIS 세션당 등록 한도가 있어 기본 40건까지만 구독합니다.
 3. 수신 틱은 `TickBuffer` 에 쌓이고, 틱마다 `SignalDetector` 가 규칙을 평가합니다.
 4. 신호는 `REALTIME_BATCH_WINDOW_SEC` 동안 묶여 하나의 트리거 이벤트가 되고,
