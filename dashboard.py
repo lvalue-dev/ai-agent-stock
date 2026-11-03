@@ -5,7 +5,7 @@ import plotly.express as px
 from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
 from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH, KIS_APP_KEY
-from tools.kis_websocket import market_session
+from tools.kis_websocket import market_session, KST
 import streamlit.components.v1 as components
 import inspect
 import json
@@ -572,7 +572,7 @@ if run_clicked:
 
         progress.progress(1.0, text=f"✅ 분석 완료! ({_elapsed()})")
         st.session_state.results = accumulated
-        st.session_state.ran_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.ran_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         if DISCORD_WEBHOOK_URL:
             if send_report(accumulated):
