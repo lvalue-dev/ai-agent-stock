@@ -266,3 +266,38 @@ def test_buffer_tape_and_sparkline():
     assert spark == sorted(spark)   # 단조 증가 데이터는 스파크라인도 증가
     s = buf.summary("005930", now=now)
     assert s["prev_price"] == 70080 and s["last_volume"] == 10 and len(s["tape"]) == 8 and len(s["spark"]) == 60
+
+
+def test_buffer_candles_and_backfill():
+    from realtime.buffer import kst_minute_ts
+    buf = TickBuffer()
+    for t, px, v in [("090001", 100, 5), ("090030", 110, 5), ("090059", 105, 5), ("090100", 106, 7)]:
+        buf.add(_tick(price=px, volume=v, time=t, at=1.0))
+    c = buf.candles("005930")
+    assert [x["hhmm"] for x in c] == ["0900", "0901"]
+    assert c[0]["open"] == 100 and c[0]["high"] == 110 and c[0]["low"] == 100 and c[0]["close"] == 105 and c[0]["volume"] == 15
+    assert c[1]["time"] - c[0]["time"] == 60 and c[0]["time"] == kst_minute_ts("0900")
+    # 백필: 없는 분은 추가, 있는 분은 거래량이 더 클 때만 교체
+    n = buf.backfill_candles("005930", [
+        {"time": "085900", "open": 99, "high": 101, "low": 98, "close": 100, "volume": 3},
+        {"time": "090000", "open": 100, "high": 112, "low": 99, "close": 105, "volume": 40},
+        {"time": "090100", "open": 106, "high": 106, "low": 106, "close": 106, "volume": 1},
+    ])
+    assert n == 2
+    c = buf.candles("005930")
+    assert [x["hhmm"] for x in c] == ["0859", "0900", "0901"] and c[1]["high"] == 112 and c[2]["volume"] == 7
+    assert buf.candles("005930", last=1)[0]["hhmm"] == "0901"
+
+
+def test_engine_live_feed_shape(tmp_path):
+    engine = RealtimeEngine(watchlist=[{"code": "005930", "name": "삼성전자"}, {"code": "000660", "name": "SK하이닉스"}],
+                            client=FakeClient(), snapshot_path=None, live_dir=str(tmp_path / "live"), backfill_pages=0)
+    engine.handle_tick(_tick(price=70000, volume=10, time="091000", at=time.time()))
+    engine.write_live(full=True)
+    feed = json.loads((tmp_path / "live" / "live.json").read_text(encoding="utf-8"))
+    assert [q["code"] for q in feed["quotes"]] == ["005930", "000660"]
+    q = feed["quotes"][0]
+    assert q["price"] == 70000 and q["last"]["hhmm"] == "0910" and q["prev"] is None
+    assert feed["quotes"][1]["last"] is None and feed["quotes"][1]["name"] == "SK하이닉스"
+    full = json.loads((tmp_path / "live" / "candles" / "005930.json").read_text(encoding="utf-8"))
+    assert full["candles"][0]["close"] == 70000

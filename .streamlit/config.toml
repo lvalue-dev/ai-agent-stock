@@ -1,0 +1,7 @@
+[server]
+# 실시간 차트 피드(static/live/*.json)와 차트 라이브러리를 /app/static/ 경로로 서빙
+enableStaticServing = true
+headless = true
+
+[browser]
+gatherUsageStats = false

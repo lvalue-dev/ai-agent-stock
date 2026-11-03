@@ -1,4 +1,6 @@
 data/realtime_snapshot.json*
+static/live/*.json
+static/live/candles/
 __pycache__/
 *.pyc
 .env

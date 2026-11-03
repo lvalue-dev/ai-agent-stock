@@ -70,3 +70,7 @@ REALTIME_BATCH_WINDOW_SEC = float(os.getenv("REALTIME_BATCH_WINDOW_SEC", "3"))  
 
 # 대시보드용 스냅샷 파일
 REALTIME_SNAPSHOT_PATH = os.getenv("REALTIME_SNAPSHOT_PATH", "data/realtime_snapshot.json")
+# 실시간 차트 피드 디렉터리 (Streamlit 정적 서빙 /app/static/live/ 로 노출). 비우면 기록 안 함
+REALTIME_LIVE_DIR = os.getenv("REALTIME_LIVE_DIR", "static/live")
+# 엔진 시작 시 당일 분봉 과거 구간 채우기 (30분 × 페이지 수, 0이면 생략)
+REALTIME_BACKFILL_PAGES = int(os.getenv("REALTIME_BACKFILL_PAGES", "4"))

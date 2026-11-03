@@ -6,6 +6,7 @@ from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
 from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH, KIS_APP_KEY
 from tools.kis_websocket import market_session
+import streamlit.components.v1 as components
 import inspect
 import json
 import os
@@ -432,6 +433,20 @@ def _render_trigger_results() -> None:
             st.rerun(scope="app")   # fragment 안이므로 앱 전체를 다시 그린다
 
 
+_CHART_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "live_chart.html")
+
+
+@st.cache_data(show_spinner=False)
+def _live_chart_html() -> str:
+    """터치 네이티브 캔들 차트 (TradingView Lightweight Charts 로컬 번들). iframe 안에서 1초마다 /app/static/live/ 피드를 읽는다."""
+    with open(_CHART_HTML_PATH, encoding="utf-8") as f:
+        return f.read()
+
+
+def _render_live_chart() -> None:
+    components.html(_live_chart_html(), height=560, scrolling=False)
+
+
 def _live_section_body() -> None:
     rt, source = _live_status()
     if not rt:
@@ -451,7 +466,9 @@ if hasattr(st, "fragment"):
 else:
     _live_section = _live_section_body
 
-with st.expander("⚡ 실시간 감시 현황", expanded=market_session() != "장외"):
+with st.expander("⚡ 실시간 시세", expanded=market_session() != "장외"):
+    # 차트는 fragment 밖에서 한 번만 그려 iframe 이 유지되고, 안에서 스스로 1초마다 피드를 읽어 갱신한다
+    _render_live_chart()
     _live_section()
 
 # ── 실행 ──────────────────────────────────────────────────────────────

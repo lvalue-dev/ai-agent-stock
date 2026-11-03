@@ -1,10 +1,19 @@
 """실시간 틱 버퍼 - 종목별 최근 체결/호가를 메모리에 유지하고 요약 지표를 계산"""
+import calendar
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from typing import Optional
 
-from tools.kis_websocket import Tick, OrderBook
+from tools.kis_websocket import Tick, OrderBook, KST
+
+
+def kst_minute_ts(hhmm: str, day: Optional[datetime] = None) -> int:
+    """오늘(KST) HHMM 을 '벽시계 시각을 UTC 로 간주한' 유닉스 초로. 차트 라이브러리가 KST 라벨을 그대로 찍게 한다."""
+    d = day or datetime.now(KST)
+    naive = datetime(d.year, d.month, d.day, int(hhmm[:2]), int(hhmm[2:4]))
+    return calendar.timegm(naive.timetuple())
 
 
 class TickBuffer:
@@ -12,6 +21,7 @@ class TickBuffer:
         self.window_sec = window_sec
         self.max_ticks = max_ticks
         self._ticks: dict[str, deque[Tick]] = {}
+        self._candles: dict[str, dict[str, list]] = {}   # code -> {HHMM: [o, h, l, c, v]}
         self._books: dict[str, OrderBook] = {}
         self._names: dict[str, str] = {}
         self._first_seen: dict[str, float] = {}
@@ -31,6 +41,51 @@ class TickBuffer:
                 self._first_seen[tick.code] = tick.received_at
             dq.append(tick)
             self._evict(dq, tick.received_at)
+            self._update_candle(tick)
+
+    def _update_candle(self, tick: Tick) -> None:
+        key = tick.time[:4] if len(tick.time) >= 4 and tick.time[:4].isdigit() else ""
+        if not key or tick.price <= 0:
+            return
+        cd = self._candles.setdefault(tick.code, {})
+        c = cd.get(key)
+        if c is None:
+            cd[key] = [tick.price, tick.price, tick.price, tick.price, tick.volume]
+        else:
+            c[1] = max(c[1], tick.price)
+            c[2] = min(c[2], tick.price)
+            c[3] = tick.price
+            c[4] += tick.volume
+
+    def backfill_candles(self, code: str, rows: list[dict]) -> int:
+        """REST 분봉으로 과거 구간 채우기. rows: {time: HHMM[SS], open, high, low, close, volume}
+        틱으로 만든 분봉이 이미 있고 거래량이 더 크면(더 완전하면) 유지한다."""
+        n = 0
+        with self._lock:
+            cd = self._candles.setdefault(code, {})
+            for r in rows:
+                key = str(r.get("time", ""))[:4]
+                if len(key) < 4 or not key.isdigit():
+                    continue
+                cur = cd.get(key)
+                if cur is None or cur[4] < int(r.get("volume", 0)):
+                    cd[key] = [int(r["open"]), int(r["high"]), int(r["low"]), int(r["close"]), int(r.get("volume", 0))]
+                    n += 1
+            self._candles[code] = dict(sorted(cd.items()))
+        return n
+
+    def candles(self, code: str, last: Optional[int] = None) -> list[dict]:
+        """1분봉 (시간 오름차순). last=n 이면 최근 n 개만."""
+        with self._lock:
+            cd = self._candles.get(code, {})
+            keys = sorted(cd)
+            if last:
+                keys = keys[-last:]
+            return [
+                {"time": kst_minute_ts(k), "hhmm": k, "open": cd[k][0], "high": cd[k][1],
+                 "low": cd[k][2], "close": cd[k][3], "volume": cd[k][4]}
+                for k in keys
+            ]
 
     def add_orderbook(self, book: OrderBook) -> None:
         with self._lock:

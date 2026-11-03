@@ -42,11 +42,21 @@ python main.py --realtime --watch 005930,000660 --orderbook
 # 신호만 기록 (LLM 호출 없음)
 python main.py --realtime --dry-run
 
-# 대시보드: 장이 열린 시간(평일 08:00~20:00)엔 스스로 KIS 웹소켓에 연결해 1초마다 자동 갱신
-#           주식창처럼 현재가 깜빡임(상승 빨강/하락 파랑), 체결 테이프, 30분 스파크라인, 1호가 표시
+# 대시보드: 장이 열린 시간(평일 08:00~20:00)엔 스스로 KIS 웹소켓에 연결
+#   - 분봉 캔들 차트(TradingView Lightweight Charts): 손가락 스와이프 스크롤, 핀치 줌, 관성, 십자선 OHLCV,
+#     1/3/5/15분 전환, 당일 분봉 자동 백필, 매초 마지막 봉 갱신
+#   - 시세 목록: 현재가 깜빡임(상승 빨강/하락 파랑), 체결 테이프, 30분 스파크라인, 1호가
 #           (main.py --realtime 이 따로 돌고 있으면 그 스냅샷을 읽어 같은 앱키로 소켓을 두 번 열지 않음)
 streamlit run dashboard.py
 ```
+
+## 실시간 차트 피드
+
+엔진은 매초 `static/live/live.json`(종목별 현재가·마지막 두 분봉)을, 5초마다 `static/live/candles/<코드>.json`(당일 1분봉 전체)을
+기록하고, Streamlit 정적 서빙(`.streamlit/config.toml` 의 `enableStaticServing`)으로 `/app/static/live/...` 에 노출합니다.
+대시보드의 차트 컴포넌트(`components/live_chart.html`)는 iframe 안에서 이 피드를 1초마다 읽어 마지막 봉만 갱신하므로
+화면이 다시 그려지지 않고, 터치 제스처는 차트 라이브러리가 직접 처리합니다. 라이브러리는 `static/vendor/` 에 번들되어 있어 외부 CDN 이 필요 없습니다.
+리버스 프록시 뒤에서 하위 경로(예: `/stock/`)로 서비스해도 부모 페이지 경로 기준으로 피드 주소를 계산합니다.
 
 ## 프리마켓 / 애프터마켓
 

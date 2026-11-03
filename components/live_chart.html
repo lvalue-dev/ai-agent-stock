@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<style>
+  :root { --bg:#0b1220; --bd:#1e293b; --tx:#e2e8f0; --tx2:#94a3b8; --up:#ff5252; --dn:#448aff; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html, body { background:var(--bg); color:var(--tx); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif; overflow:hidden; }
+  #wrap { display:flex; flex-direction:column; height:100vh; }
+  .chips { display:flex; gap:6px; overflow-x:auto; padding:6px 8px; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+  .chips::-webkit-scrollbar { display:none; }
+  .chip { flex:0 0 auto; padding:6px 12px; border-radius:16px; border:1px solid var(--bd); background:#111827; color:var(--tx2); font-size:12px; cursor:pointer; user-select:none; white-space:nowrap; }
+  .chip.on { background:#1e293b; color:var(--tx); border-color:#334155; font-weight:600; }
+  .chip.tf { padding:5px 10px; font-size:11px; }
+  .chip .d { font-size:10px; margin-left:4px; }
+  .head { display:flex; justify-content:space-between; align-items:flex-end; padding:4px 10px 2px; }
+  .head .nm { font-size:15px; font-weight:700; }
+  .head .cd { font-size:11px; color:var(--tx2); margin-left:4px; }
+  .head .px { font-size:26px; font-weight:800; line-height:1.1; font-variant-numeric:tabular-nums; transition:color .15s; }
+  .head .chg { font-size:13px; font-weight:600; }
+  .head .meta { font-size:11px; color:var(--tx2); text-align:right; line-height:1.5; }
+  .up { color:var(--up); } .dn { color:var(--dn); } .fl { color:#cbd5e1; }
+  @keyframes fu { 0%{background:#ff525255} 100%{background:transparent} }
+  @keyframes fd { 0%{background:#448aff55} 100%{background:transparent} }
+  .px.fu { animation:fu .8s ease-out; border-radius:6px; } .px.fd { animation:fd .8s ease-out; border-radius:6px; }
+  #chart { flex:1; min-height:280px; position:relative; }
+  #legend { position:absolute; left:10px; top:6px; z-index:5; font-size:11px; color:var(--tx2); background:#0b1220cc; padding:3px 6px; border-radius:6px; pointer-events:none; font-variant-numeric:tabular-nums; }
+  #legend b { color:var(--tx); }
+  .foot { display:flex; justify-content:space-between; align-items:center; padding:4px 10px 6px; font-size:11px; color:var(--tx2); }
+  .foot .tfs { display:flex; gap:4px; }
+  #status { font-size:11px; }
+  .empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--tx2); font-size:13px; z-index:4; pointer-events:none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="chips" id="chips"></div>
+  <div class="head">
+    <div><span class="nm" id="nm">—</span><span class="cd" id="cd"></span>
+      <div class="px fl" id="px">—</div>
+      <div class="chg fl" id="chg"></div></div>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div id="chart"><div id="legend"></div><div class="empty" id="empty">데이터를 기다리는 중…</div></div>
+  <div class="foot">
+    <div class="tfs" id="tfs"></div>
+    <div id="status">연결 확인 중…</div>
+  </div>
+</div>
+<script>
+  // Streamlit 정적 서빙(/app/static/)은 리버스 프록시 prefix(예: /stock/) 뒤에 붙으므로 부모 페이지 경로 기준으로 계산
+  (function () {
+    var p = ''; try { p = window.parent.location.pathname; } catch (e) { p = location.pathname; }
+    if (!p.endsWith('/')) p += '/';
+    window.__BASE__ = p + 'app/static/';
+    document.write('<script src="' + window.__BASE__ + 'vendor/lightweight-charts.js"><\/script>');
+  })();
+</script>
+<script>
+(() => {
+  const BASE = window.__BASE__;
+  const url = (f) => BASE + f + '?t=' + Date.now();
+  const $ = (id) => document.getElementById(id);
+  const fmt = (n) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('ko-KR');
+  const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(1) + '억' : v >= 1e4 ? (v / 1e4).toFixed(1) + '만' : fmt(v);
+  const hhmm = (t) => { const d = new Date(t * 1000); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
+  const cls = (v) => v > 0 ? 'up' : v < 0 ? 'dn' : 'fl';
+
+  const state = { quotes: [], sel: null, tf: 1, raw: [], rawCode: null, lastPrice: {}, lastFullFetch: 0, lastAgg: [] };
+  const TFS = [1, 3, 5, 15];
+
+  // ── 차트 ───────────────────────────────────────────────────────────
+  const chart = LightweightCharts.createChart($('chart'), {
+    autoSize: true,
+    layout: { background: { type: 'solid', color: '#0b1220' }, textColor: '#94a3b8', fontSize: 11 },
+    grid: { vertLines: { color: '#131c2e' }, horzLines: { color: '#131c2e' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: '#64748b', labelBackgroundColor: '#334155' }, horzLine: { color: '#64748b', labelBackgroundColor: '#334155' } },
+    rightPriceScale: { borderColor: '#1e293b', scaleMargins: { top: 0.08, bottom: 0.25 } },
+    timeScale: { borderColor: '#1e293b', timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 7, minBarSpacing: 2 },
+    // 터치: 가로 드래그 = 스크롤, 세로 드래그는 페이지 스크롤에 양보, 핀치 = 줌, 관성 스크롤
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    kineticScroll: { touch: true, mouse: false },
+    localization: { locale: 'ko-KR', priceFormatter: (p) => Math.round(p).toLocaleString('ko-KR'),
+      timeFormatter: (t) => hhmm(t) },
+  });
+  const candles = chart.addCandlestickSeries({
+    upColor: '#ff5252', downColor: '#448aff', borderUpColor: '#ff5252', borderDownColor: '#448aff',
+    wickUpColor: '#ff5252', wickDownColor: '#448aff',
+    priceFormat: { type: 'price', precision: 0, minMove: 1 }, lastValueVisible: true, priceLineVisible: true,
+  });
+  const vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', color: '#475569' });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 }, borderVisible: false });
+  window.__chart = chart;   // 디버그/테스트용
+
+  chart.subscribeCrosshairMove((param) => {
+    const c = param.seriesData.get(candles); const v = param.seriesData.get(vol);
+    if (!c) { renderLegendLast(); return; }
+    legend(c, v ? v.value : null, param.time);
+  });
+  function legend(c, v, t) {
+    const d = c.close - c.open;
+    $('legend').innerHTML = `${hhmm(t)} 시 <b>${fmt(c.open)}</b> 고 <b>${fmt(c.high)}</b> 저 <b>${fmt(c.low)}</b> 종 <b class="${cls(d)}">${fmt(c.close)}</b>` + (v != null ? ` 량 <b>${fmtVol(v)}</b>` : '');
+  }
+  function renderLegendLast() {
+    const a = state.lastAgg; if (!a.length) { $('legend').innerHTML = ''; return; }
+    const b = a[a.length - 1]; legend(b, b.volume, b.time);
+  }
+
+  // ── 분봉 집계 (1분 → tf분) ──────────────────────────────────────────
+  function aggregate(raw, tf) {
+    if (tf === 1) return raw.map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume }));
+    const out = []; const step = tf * 60;
+    for (const r of raw) {
+      const t = Math.floor(r.time / step) * step;
+      const last = out[out.length - 1];
+      if (last && last.time === t) { last.high = Math.max(last.high, r.high); last.low = Math.min(last.low, r.low); last.close = r.close; last.volume += r.volume; }
+      else out.push({ time: t, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume });
+    }
+    return out;
+  }
+  function volBar(b) { return { time: b.time, value: b.volume, color: b.close >= b.open ? '#ff525266' : '#448aff66' }; }
+
+  function setAll(raw, keepView) {
+    const range = keepView ? chart.timeScale().getVisibleLogicalRange() : null;
+    const prevLen = state.lastAgg.length;
+    const agg = aggregate(raw, state.tf);
+    candles.setData(agg); vol.setData(agg.map(volBar));
+    state.lastAgg = agg;
+    if (range && prevLen) { const shift = agg.length - prevLen; chart.timeScale().setVisibleLogicalRange({ from: range.from + shift, to: range.to + shift }); }
+    else if (agg.length) { chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, agg.length - 80), to: agg.length + 3 }); }
+    $('empty').style.display = agg.length ? 'none' : 'flex';
+    renderLegendLast();
+  }
+  // 마지막 봉만 갱신 (매초). 이전 분 봉이 바뀌었으면(분 전환) 전체 재설정
+  function applyLatest(last, prev) {
+    const raw = state.raw;
+    const merge = (c) => {
+      if (!c) return false;
+      const i = raw.findIndex(r => r.time === c.time);
+      if (i < 0) { raw.push(c); raw.sort((a, b) => a.time - b.time); return true; }
+      const r = raw[i]; const changed = r.close !== c.close || r.volume !== c.volume || r.high !== c.high || r.low !== c.low;
+      raw[i] = c; return changed;
+    };
+    const prevChanged = merge(prev);
+    merge(last);
+    const agg = aggregate(raw, state.tf);
+    if (!agg.length) return;
+    const lastAgg = state.lastAgg;
+    const sameLen = agg.length === lastAgg.length;
+    const appended = agg.length === lastAgg.length + 1;
+    if ((sameLen || appended) && !(prevChanged && agg.length > 1 && agg[agg.length - 2].time !== (lastAgg[lastAgg.length - 1] || {}).time)) {
+      // 끝 봉 업데이트/추가만으로 충분한 경우
+      if (appended && lastAgg.length) { const p = agg[agg.length - 2]; const lp = lastAgg[lastAgg.length - 1]; if (p.time === lp.time && (p.close !== lp.close || p.volume !== lp.volume)) { candles.update(p); vol.update(volBar(p)); } }
+      const b = agg[agg.length - 1]; candles.update(b); vol.update(volBar(b));
+      state.lastAgg = agg;
+      $('empty').style.display = 'none';
+      renderLegendLast();
+    } else {
+      setAll(raw, true);
+    }
+  }
+
+  // ── 종목/주기 선택 ─────────────────────────────────────────────────
+  function renderChips() {
+    const el = $('chips');
+    el.innerHTML = state.quotes.map(q => {
+      const cr = q.change_rate == null ? null : Number(q.change_rate);
+      return `<div class="chip ${q.code === state.sel ? 'on' : ''}" data-code="${q.code}">${q.name || q.code}` +
+        (cr == null ? '' : `<span class="d ${cls(cr)}">${cr > 0 ? '+' : ''}${cr.toFixed(2)}%</span>`) + `</div>`;
+    }).join('');
+    el.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => select(c.dataset.code)));
+  }
+  function renderTfs() {
+    $('tfs').innerHTML = TFS.map(t => `<div class="chip tf ${t === state.tf ? 'on' : ''}" data-tf="${t}">${t}분</div>`).join('');
+    $('tfs').querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { state.tf = Number(c.dataset.tf); renderTfs(); setAll(state.raw, false); }));
+  }
+  async function select(code) {
+    if (!code) return;
+    state.sel = code; renderChips();
+    const on = document.querySelector('.chip.on'); if (on) on.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    await fetchFull(code);
+    renderHead();
+  }
+  async function fetchFull(code) {
+    try {
+      const r = await fetch(url('live/candles/' + code + '.json'), { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const j = await r.json();
+      const raw = (j.candles || []).map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+      const sameCode = state.rawCode === code;
+      // 백필 등으로 과거 봉이 늘었을 때만 전체 재설정 (화면 위치 유지)
+      if (!sameCode || raw.length !== state.raw.length || (raw.length && raw[0].time !== state.raw[0].time)) {
+        state.raw = raw; state.rawCode = code; setAll(raw, sameCode);
+      }
+      state.lastFullFetch = Date.now();
+    } catch (e) {
+      if (state.rawCode !== code) { state.raw = []; state.rawCode = code; setAll([], false); }
+    }
+  }
+
+  // ── 헤더/상태 ──────────────────────────────────────────────────────
+  function renderHead() {
+    const q = state.quotes.find(x => x.code === state.sel); if (!q) return;
+    $('nm').textContent = q.name || q.code; $('cd').textContent = q.code;
+    const cr = Number(q.change_rate || 0);
+    const px = $('px');
+    const prev = state.lastPrice[q.code];
+    px.textContent = fmt(q.price); px.className = 'px ' + cls(cr);
+    if (q.price != null && prev != null && q.price !== prev) { px.classList.add(q.price > prev ? 'fu' : 'fd'); setTimeout(() => px.classList.remove('fu', 'fd'), 800); }
+    if (q.price != null) state.lastPrice[q.code] = q.price;
+    $('chg').textContent = q.price == null ? '' : `${q.change > 0 ? '+' : ''}${fmt(q.change)} (${cr > 0 ? '+' : ''}${cr.toFixed(2)}%)`;
+    $('chg').className = 'chg ' + cls(cr);
+    const t = (q.time || '').replace(/(\d{2})(\d{2})(\d{2})/, '$1:$2:$3');
+    $('meta').innerHTML = q.price == null ? '체결 대기' :
+      `${q.session || ''} ${t}<br>고 ${fmt(q.high)} · 저 ${fmt(q.low)} · 시 ${fmt(q.open)}<br>거래량 ${fmtVol(q.acc_volume || 0)} · 강도 ${Math.round(q.strength || 0)}`;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(url('live/live.json'), { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      state.quotes = j.quotes || [];
+      if (!state.sel && state.quotes.length) await select(state.quotes[0].code);
+      else renderChips();
+      const q = state.quotes.find(x => x.code === state.sel);
+      if (q) {
+        if (state.rawCode !== q.code) await fetchFull(q.code);
+        if (q.last) applyLatest(q.last, q.prev);
+        if (Date.now() - state.lastFullFetch > 10000) fetchFull(q.code);   // 백필/재접속 반영
+      }
+      renderHead();
+      const icon = { '정규장': '🟢', '프리마켓': '🟠', '애프터마켓': '🟣' }[j.session] || (String(j.session || '').includes('동시호가') ? '🟡' : '⚫');
+      $('status').textContent = `${icon} ${j.session || ''} · ${j.connected ? '소켓 연결' : '소켓 끊김'} · ${(j.updated_at || '').slice(11, 19)}`;
+    } catch (e) {
+      $('status').textContent = '피드 대기 중… (' + e.message + ')';
+    }
+  }
+  renderTfs();
+  poll();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

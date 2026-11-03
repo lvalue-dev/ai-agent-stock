@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from config import (
     WATCHLIST, WATCHLIST_AUTO_LIMIT, REALTIME_MAX_SUBSCRIPTIONS, REALTIME_ORDERBOOK,
     REALTIME_TRIGGER_COOLDOWN_SEC, REALTIME_BATCH_WINDOW_SEC, REALTIME_SNAPSHOT_PATH,
+    REALTIME_LIVE_DIR, REALTIME_BACKFILL_PAGES,
 )
 from tools.kis_websocket import KISWebSocketClient, Tick, OrderBook, market_session, TR_TRADE, KST
 from config import KIS_MARKET
@@ -70,6 +71,8 @@ class RealtimeEngine:
         snapshot_path: Optional[str] = REALTIME_SNAPSHOT_PATH,
         snapshot_interval_sec: float = 1.0,
         max_subscriptions: int = REALTIME_MAX_SUBSCRIPTIONS,
+        live_dir: Optional[str] = REALTIME_LIVE_DIR,
+        backfill_pages: int = REALTIME_BACKFILL_PAGES,
     ):
         self.watchlist = watchlist
         self.on_trigger = on_trigger
@@ -84,6 +87,9 @@ class RealtimeEngine:
         self.batch_window_sec = batch_window_sec
         self.snapshot_path = snapshot_path
         self.snapshot_interval_sec = snapshot_interval_sec
+        self.live_dir = live_dir
+        self.backfill_pages = backfill_pages
+        self.backfilled: set[str] = set()
 
         self._queue: queue.Queue[Signal] = queue.Queue()
         self._stop = threading.Event()
@@ -112,9 +118,11 @@ class RealtimeEngine:
         self.client.start()
         self._worker = threading.Thread(target=self._worker_loop, name="rt-worker", daemon=True)
         self._worker.start()
-        if self.snapshot_path:
+        if self.snapshot_path or self.live_dir:
             self._snapshot_thread = threading.Thread(target=self._snapshot_loop, name="rt-snapshot", daemon=True)
             self._snapshot_thread.start()
+        if self.backfill_pages > 0:
+            threading.Thread(target=self._backfill_loop, name="rt-backfill", daemon=True).start()
         log.info("실시간 엔진 시작: %d 종목 감시 (호가 %s)", subscribed // per_code, "포함" if self.orderbook else "제외")
 
     def stop(self) -> None:
@@ -123,6 +131,7 @@ class RealtimeEngine:
         if self._worker:
             self._worker.join(timeout=5)
         self.write_snapshot()
+        self.write_live(full=True)
 
     def run_forever(self) -> None:
         """Ctrl+C 까지 대기"""
@@ -230,6 +239,76 @@ class RealtimeEngine:
             log.debug("스냅샷 저장 실패: %s", e)
 
     def _snapshot_loop(self) -> None:
+        n = 0
         while not self._stop.is_set():
             self.write_snapshot()
+            self.write_live(full=(n % 5 == 0))
+            n += 1
             self._stop.wait(self.snapshot_interval_sec)
+
+    # ── 차트 피드 (대시보드 차트 컴포넌트가 1초마다 읽음) ──────────────
+    def live_feed(self) -> dict:
+        quotes = []
+        for item in self.watchlist:
+            code = item["code"]
+            summ = self.buffer.summary(code)
+            last2 = self.buffer.candles(code, last=2)
+            q = {"code": code, "name": item.get("name", "") or self.buffer.name(code)}
+            if summ:
+                q.update({k: summ.get(k) for k in (
+                    "price", "change", "change_rate", "open", "high", "low", "acc_volume", "acc_amount",
+                    "strength", "last_volume", "last_side", "time", "session", "ask1", "bid1",
+                    "vol_ratio_1m", "pct_5m", "buy_ratio_5m",
+                )})
+            q["last"] = last2[-1] if last2 else None
+            q["prev"] = last2[-2] if len(last2) > 1 else None
+            q["backfilled"] = code in self.backfilled
+            quotes.append(q)
+        return {
+            "updated_at": datetime.now(KST).isoformat(timespec="seconds"),
+            "session": market_session(),
+            "connected": self.client.connected.is_set(),
+            "market": KIS_MARKET,
+            "quotes": quotes,
+        }
+
+    def write_live(self, full: bool = False) -> None:
+        """static/live/live.json (매초) + static/live/candles/<code>.json (5초마다)"""
+        if not self.live_dir:
+            return
+        try:
+            os.makedirs(os.path.join(self.live_dir, "candles"), exist_ok=True)
+            self._atomic_json(os.path.join(self.live_dir, "live.json"), self.live_feed())
+            if full:
+                for item in self.watchlist:
+                    code = item["code"]
+                    self._atomic_json(
+                        os.path.join(self.live_dir, "candles", f"{code}.json"),
+                        {"code": code, "name": item.get("name", ""), "candles": self.buffer.candles(code)},
+                    )
+        except Exception as e:
+            log.debug("피드 저장 실패: %s", e)
+
+    @staticmethod
+    def _atomic_json(path: str, obj) -> None:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, path)
+
+    # ── 당일 분봉 백필 (REST, 백그라운드) ───────────────────────────────
+    def _backfill_loop(self) -> None:
+        from tools.kis_api import get_minute_candles
+        for item in self.watchlist:
+            if self._stop.is_set():
+                return
+            code = item["code"]
+            try:
+                rows = get_minute_candles(code, pages=self.backfill_pages)
+                n = self.buffer.backfill_candles(code, rows)
+                self.backfilled.add(code)
+                log.info("분봉 백필 %s: %d건", code, n)
+            except Exception as e:
+                log.warning("분봉 백필 실패 %s: %s", code, e)
+            self._stop.wait(0.15)
+        self.write_live(full=True)

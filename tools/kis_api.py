@@ -1,7 +1,9 @@
 """한국투자증권 KIS OpenAPI 래퍼"""
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+KST = timezone(timedelta(hours=9))
 from typing import Optional
 from config import (
     KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO,
@@ -219,6 +221,59 @@ def get_daily_volume(stock_code: str, days: int = 10) -> list[dict]:
         ]
     except Exception:
         return []
+
+
+def get_minute_candles(stock_code: str, pages: int = 4, end_time: str = "") -> list[dict]:
+    """당일 1분봉 (FHKST03010200). 한 번에 30건씩 과거로 페이지. 결과는 시간 오름차순.
+
+    KIS_MARKET=UN 이면 NXT 프리마켓/애프터마켓 분봉도 포함된다.
+    """
+    out: dict[str, dict] = {}
+    hour = end_time or datetime.now(KST).strftime("%H%M%S")
+    for _ in range(max(pages, 1)):
+        data = _quote(
+            "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            "FHKST03010200",
+            {
+                "FID_ETC_CLS_CODE": "",
+                "FID_INPUT_ISCD": stock_code,
+                "FID_INPUT_HOUR_1": hour,
+                "FID_PW_DATA_INCU_YN": "Y",
+            },
+        )
+        rows = data.get("output2") or []
+        times = []
+        for r in rows:
+            t = str(r.get("stck_cntg_hour", ""))
+            if len(t) < 4:
+                continue
+            times.append(t)
+            out[t[:4]] = {
+                "time": t,
+                "open": _to_int(r.get("stck_oprc")),
+                "high": _to_int(r.get("stck_hgpr")),
+                "low": _to_int(r.get("stck_lwpr")),
+                "close": _to_int(r.get("stck_prpr")),
+                "volume": _to_int(r.get("cntg_vol")),
+            }
+        if not times:
+            break
+        earliest = min(times)
+        if earliest <= "080000":
+            break
+        # 가장 이른 분의 1분 전부터 다시 조회
+        hh, mm = int(earliest[:2]), int(earliest[2:4])
+        prev = datetime(2000, 1, 1, hh, mm) - timedelta(minutes=1)
+        hour = prev.strftime("%H%M%S")
+        time.sleep(0.1)   # 초당 호출 제한 완화
+    return [out[k] for k in sorted(out)]
+
+
+def _to_int(v, default: int = 0) -> int:
+    try:
+        return int(float(str(v).replace(",", "")))
+    except (TypeError, ValueError):
+        return default
 
 
 def get_stock_news(stock_code: str, limit: int = 10) -> list[dict]:
