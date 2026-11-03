@@ -25,6 +25,19 @@ def create_llm(temperature: float = 0.3) -> BaseChatModel:
         )
 
 
+# 재시도 대기 상황을 UI 등에 알리고 싶을 때 설정 (message: str) -> None
+RETRY_LISTENER = None
+
+
+def _notify(message: str) -> None:
+    print(f"  ⏳ {message}")
+    if RETRY_LISTENER:
+        try:
+            RETRY_LISTENER(message)
+        except Exception:
+            pass
+
+
 def invoke_with_retry(llm: BaseChatModel, messages: list, max_retries: int = 4) -> any:
     """429/503 오류 시 지수 백오프로 재시도"""
     delay = 30
@@ -33,10 +46,10 @@ def invoke_with_retry(llm: BaseChatModel, messages: list, max_retries: int = 4) 
             return llm.invoke(messages)
         except Exception as e:
             err = str(e)
-            is_rate_limit = "429" in err or "RESOURCE_EXHAUSTED" in err
+            is_rate_limit = "429" in err or "RESOURCE_EXHAUSTED" in err or "rate_limit" in err.lower()
             is_unavailable = "503" in err or "UNAVAILABLE" in err
             if (is_rate_limit or is_unavailable) and attempt < max_retries - 1:
-                print(f"  ⏳ API 한도 초과, {delay}초 후 재시도 ({attempt + 1}/{max_retries})...")
+                _notify(f"LLM API 한도 초과({'429' if is_rate_limit else '503'}), {delay}초 후 재시도 ({attempt + 1}/{max_retries})")
                 time.sleep(delay)
                 delay = min(delay * 2, 120)
             else:

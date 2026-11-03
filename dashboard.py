@@ -10,7 +10,9 @@ import streamlit.components.v1 as components
 import inspect
 import json
 import os
+import threading
 import time
+import traceback
 from utils.discord import send_report
 
 st.set_page_config(
@@ -87,7 +89,7 @@ with st.sidebar:
     st.caption("Discord: " + ("✅ 연동됨" if DISCORD_WEBHOOK_URL else "미설정"))
 
 # ── 세션 초기화 ──────────────────────────────────────────────────────
-for k, v in [("results", None), ("messages", []), ("ran_at", None), ("agent_done", set())]:
+for k, v in [("results", None), ("messages", []), ("ran_at", None), ("agent_done", set()), ("run_error", None)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -241,6 +243,12 @@ def _snapshot_is_fresh() -> bool:
         return False
 
 
+@st.cache_resource(show_spinner=False)
+def _analysis_lock() -> threading.Lock:
+    """대시보드 수동 분석과 엔진 트리거 분석이 동시에 LLM 을 두드리지 않도록 (무료 티어 한도 보호)"""
+    return threading.Lock()
+
+
 @st.cache_resource(show_spinner="📡 KIS 웹소켓 연결 중...")
 def _get_engine():
     """서버 프로세스당 하나만 띄우는 실시간 엔진. 신호가 오면 에이전트 파이프라인을 백그라운드로 실행."""
@@ -248,9 +256,16 @@ def _get_engine():
     from main import run_pipeline
 
     results: list[dict] = []
+    lock = _analysis_lock()
 
     def on_trigger(event: dict) -> None:
-        state = run_pipeline(trigger_event=event)
+        if not lock.acquire(blocking=False):
+            print("⏭️  다른 분석이 진행 중이라 실시간 트리거 분석을 건너뜁니다:", event.get("summary", ""))
+            return
+        try:
+            state = run_pipeline(trigger_event=event)
+        finally:
+            lock.release()
         if state:
             state["_triggered_at"] = event.get("at", "")
             results.append(state)
@@ -460,75 +475,135 @@ def _live_section_body() -> None:
 
 
 # 장이 열린 시간에만 자동 갱신 (fragment 는 이 부분만 다시 그린다)
-_live_refresh = LIVE_REFRESH_SEC if market_session() != "장외" else None
+# 분석 실행 중에는 자동 갱신을 멈춘다. 일부 Streamlit 버전은 fragment 자동 재실행이 진행 중인 메인 실행을 끊는다.
+_live_refresh = None if run_clicked else (LIVE_REFRESH_SEC if market_session() != "장외" else None)
 if hasattr(st, "fragment"):
     _live_section = st.fragment(run_every=_live_refresh)(_live_section_body)
 else:
     _live_section = _live_section_body
 
-with st.expander("⚡ 실시간 시세", expanded=market_session() != "장외"):
+with st.expander("⚡ 실시간 시세", expanded=market_session() != "장외" and not run_clicked):
     # 차트는 fragment 밖에서 한 번만 그려 iframe 이 유지되고, 안에서 스스로 1초마다 피드를 읽어 갱신한다
     _render_live_chart()
-    _live_section()
+    if run_clicked:
+        st.caption("분석이 끝날 때까지 시세 목록 자동 갱신을 잠시 멈춥니다. 차트는 계속 갱신됩니다.")
+    else:
+        _live_section()
 
 # ── 실행 ──────────────────────────────────────────────────────────────
 if run_clicked:
     st.session_state.messages = []
     st.session_state.results = None
     st.session_state.agent_done = set()
+    st.session_state.run_error = None
 
-    app = build_graph()
-    initial_state = get_initial_state()
-    accumulated = dict(initial_state)
+    import utils.llm as _llm_mod
 
     # 파이프라인 진행 표시
     pipeline_placeholder = st.empty()
     progress = st.progress(0, text="분석 준비 중...")
+    status_line = st.empty()
     chat_placeholder = st.empty()
 
     total_est = MAX_DEBATE_ROUNDS * 2 + len(PIPELINE)
     step_n = 0
+    started = time.time()
+    current_label = "준비"
 
-    for step in app.stream(initial_state, {"recursion_limit": 50}):
-        for node_name, node_output in step.items():
-            if node_name == "__end__" or not isinstance(node_output, dict):
-                continue
-            accumulated.update(node_output)
-            emoji, label = AGENT_META.get(node_name, ("🤖", node_name))
-            content = _node_content(node_name, accumulated)
-            st.session_state.messages.append(
-                {"avatar": emoji, "name": label, "content": content, "node": node_name}
-            )
-            st.session_state.agent_done.add(node_name)
-            step_n += 1
-            progress.progress(min(step_n / total_est, 0.95), text=f"'{label}' 처리 중...")
+    def _elapsed() -> str:
+        return f"{int(time.time() - started) // 60}분 {int(time.time() - started) % 60}초"
 
-            # 파이프라인 상태 표시
-            with pipeline_placeholder.container():
-                cols = st.columns(len(PIPELINE))
-                for i, node in enumerate(PIPELINE):
-                    e, lbl = AGENT_META.get(node, ("🤖", node))
-                    if node in st.session_state.agent_done:
-                        cols[i].markdown(f"<div class='agent-step step-done'>{e} {lbl} ✓</div>", unsafe_allow_html=True)
-                    elif node == node_name:
-                        cols[i].markdown(f"<div class='agent-step step-running'>{e} {lbl} ...</div>", unsafe_allow_html=True)
-                    else:
-                        cols[i].markdown(f"<div class='agent-step step-pending'>{e} {lbl}</div>", unsafe_allow_html=True)
+    def _set_status(msg: str) -> None:
+        status_line.caption(f"⏱ {_elapsed()} 경과 · {msg}")
 
-            # 채팅 업데이트
-            with chat_placeholder.container():
-                for m in st.session_state.messages[-6:]:  # 최근 6개만 실시간 표시
-                    with st.chat_message(m["name"], avatar=m["avatar"]):
-                        st.markdown(m["content"][:600] + ("..." if len(m["content"]) > 600 else ""))
+    _llm_mod.RETRY_LISTENER = lambda msg: _set_status(f"'{current_label}' 단계 · {msg}")
 
-    progress.progress(1.0, text="✅ 분석 완료!")
-    st.session_state.results = accumulated
-    st.session_state.ran_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lock = _analysis_lock()
+    waited = 0
+    while not lock.acquire(blocking=False):
+        if waited == 0:
+            _set_status("실시간 트리거 분석이 진행 중입니다. 끝나면 이어서 시작합니다…")
+        time.sleep(1)
+        waited += 1
+        if waited > 900:
+            st.error("다른 분석이 15분 넘게 끝나지 않아 중단했습니다. 잠시 후 다시 시도해주세요.")
+            st.stop()
 
-    if DISCORD_WEBHOOK_URL:
-        if send_report(accumulated):
-            st.toast("Discord 전송 완료!", icon="📨")
+    accumulated: dict = {}
+    try:
+        app = build_graph()
+        initial_state = get_initial_state()
+        accumulated = dict(initial_state)
+        _set_status("시장 데이터 수집 및 첫 에이전트 호출 중…")
+
+        for step in app.stream(initial_state, {"recursion_limit": 50}):
+            for node_name, node_output in step.items():
+                if node_name == "__end__" or not isinstance(node_output, dict):
+                    continue
+                accumulated.update(node_output)
+                emoji, label = AGENT_META.get(node_name, ("🤖", node_name))
+                current_label = label
+                content = _node_content(node_name, accumulated)
+                st.session_state.messages.append(
+                    {"avatar": emoji, "name": label, "content": content, "node": node_name}
+                )
+                st.session_state.agent_done.add(node_name)
+                step_n += 1
+                progress.progress(min(step_n / total_est, 0.95), text=f"'{label}' 완료 · 다음 단계 진행 중...")
+                _set_status(f"'{label}' 완료")
+
+                # 파이프라인 상태 표시
+                with pipeline_placeholder.container():
+                    cols = st.columns(len(PIPELINE))
+                    for i, node in enumerate(PIPELINE):
+                        e, lbl = AGENT_META.get(node, ("🤖", node))
+                        if node in st.session_state.agent_done:
+                            cols[i].markdown(f"<div class='agent-step step-done'>{e} {lbl} ✓</div>", unsafe_allow_html=True)
+                        elif node == node_name:
+                            cols[i].markdown(f"<div class='agent-step step-running'>{e} {lbl} ...</div>", unsafe_allow_html=True)
+                        else:
+                            cols[i].markdown(f"<div class='agent-step step-pending'>{e} {lbl}</div>", unsafe_allow_html=True)
+
+                # 채팅 업데이트
+                with chat_placeholder.container():
+                    for m in st.session_state.messages[-6:]:  # 최근 6개만 실시간 표시
+                        with st.chat_message(m["name"], avatar=m["avatar"]):
+                            st.markdown(m["content"][:600] + ("..." if len(m["content"]) > 600 else ""))
+
+        progress.progress(1.0, text=f"✅ 분석 완료! ({_elapsed()})")
+        st.session_state.results = accumulated
+        st.session_state.ran_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if DISCORD_WEBHOOK_URL:
+            if send_report(accumulated):
+                st.toast("Discord 전송 완료!", icon="📨")
+    except Exception as e:
+        # 어떤 단계에서 왜 실패했는지 남기고, 완료된 단계의 결과는 보존
+        st.session_state.run_error = {
+            "label": current_label, "elapsed": _elapsed(), "error": f"{type(e).__name__}: {e}",
+            "trace": traceback.format_exc(), "partial": accumulated,
+        }
+    finally:
+        _llm_mod.RETRY_LISTENER = None
+        lock.release()
     st.rerun()
+
+if st.session_state.get("run_error"):
+    err = st.session_state.run_error
+    st.error(f"분석이 '{err['label']}' 단계에서 중단됐습니다 ({err['elapsed']} 경과): {err['error']}")
+    with st.expander("오류 상세"):
+        st.code(err["trace"])
+    partial = err.get("partial") or {}
+    done = [AGENT_META.get(n, ("🤖", n))[1] for n in PIPELINE if _node_content(n, partial)]
+    if done:
+        st.caption("완료된 단계: " + ", ".join(done))
+        with st.expander("완료된 단계 결과 보기"):
+            for n in PIPELINE:
+                c = _node_content(n, partial)
+                if c:
+                    e, lbl = AGENT_META.get(n, ("🤖", n))
+                    with st.chat_message(lbl, avatar=e):
+                        st.markdown(c)
 
 # ── 결과 대시보드 ─────────────────────────────────────────────────────
 if st.session_state.results:
