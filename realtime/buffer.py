@@ -68,6 +68,39 @@ class TickBuffer:
             cutoff = now - seconds
             return [t for t in dq if t.received_at >= cutoff]
 
+    def tape(self, code: str, n: int = 10) -> list[dict]:
+        """최근 체결 n건 (주식창 체결 테이프용, 최신이 앞)"""
+        with self._lock:
+            dq = self._ticks.get(code)
+            if not dq:
+                return []
+            recent = list(dq)[-n:]
+        return [
+            {"time": t.time, "price": t.price, "volume": t.volume, "side": t.side}
+            for t in reversed(recent)
+        ]
+
+    def sparkline(self, code: str, points: int = 60, seconds: int = 1800, now: Optional[float] = None) -> list[int]:
+        """최근 seconds 구간을 points 개 버킷으로 나눠 버킷별 마지막 체결가 (빈 버킷은 직전 값)"""
+        now = now if now is not None else time.time()
+        ticks = self.ticks(code, seconds=seconds, now=now)
+        if not ticks:
+            return []
+        start = now - seconds
+        bucket = seconds / points
+        out: list[Optional[int]] = [None] * points
+        for t in ticks:
+            idx = min(int((t.received_at - start) / bucket), points - 1)
+            if idx >= 0:
+                out[idx] = t.price
+        # 앞쪽 빈 버킷은 첫 체결가로, 중간 빈 버킷은 직전 값으로 채운다
+        first = next((v for v in out if v is not None), ticks[0].price)
+        filled, prev = [], first
+        for v in out:
+            prev = v if v is not None else prev
+            filled.append(prev)
+        return filled
+
     def summary(self, code: str, now: Optional[float] = None) -> Optional[dict]:
         """신호 감지와 LLM 프롬프트에 쓰는 종목 요약"""
         now = now if now is not None else time.time()
@@ -75,6 +108,7 @@ class TickBuffer:
         if not all_ticks:
             return None
         last = all_ticks[-1]
+        prev = all_ticks[-2] if len(all_ticks) > 1 else last
         t1m = [t for t in all_ticks if t.received_at >= now - 60]
         t5m = [t for t in all_ticks if t.received_at >= now - 300]
 
@@ -105,6 +139,9 @@ class TickBuffer:
             "time": last.time,
             "session": last.session,
             "price": last.price,
+            "prev_price": prev.price,          # 직전 체결가 (틱 방향 표시용)
+            "last_volume": last.volume,
+            "last_side": last.side,
             "change": last.change,
             "change_rate": last.change_rate,          # 전일 대비 (%)
             "open": last.open,
@@ -131,6 +168,8 @@ class TickBuffer:
             "tick_count_1m": len(t1m),
             "data_span_sec": int(span_sec),
             "halted": last.halted,
+            "spark": self.sparkline(code, seconds=int(max(60, min(self.window_sec, span_sec))), now=now),  # 데이터가 쌓인 만큼만
+            "tape": self.tape(code, 8),
         }
 
     def snapshot(self, codes: Optional[list[str]] = None, limit: int = 20, now: Optional[float] = None) -> list[dict]:

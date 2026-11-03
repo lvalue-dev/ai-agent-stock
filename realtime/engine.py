@@ -68,7 +68,7 @@ class RealtimeEngine:
         trigger_cooldown_sec: int = REALTIME_TRIGGER_COOLDOWN_SEC,
         batch_window_sec: float = REALTIME_BATCH_WINDOW_SEC,
         snapshot_path: Optional[str] = REALTIME_SNAPSHOT_PATH,
-        snapshot_interval_sec: float = 5.0,
+        snapshot_interval_sec: float = 1.0,
         max_subscriptions: int = REALTIME_MAX_SUBSCRIPTIONS,
     ):
         self.watchlist = watchlist

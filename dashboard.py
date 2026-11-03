@@ -32,6 +32,32 @@ body { background-color: #0f172a; }
 .step-running { background: #1e3a5f; color: #60a5fa; animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
 @media (max-width: 640px) { h1 { font-size: 1.4rem !important; } h2 { font-size: 1.15rem !important; } }
+/* ── 실시간 시세판 ── */
+.lb-head { display:flex; justify-content:space-between; align-items:center; font-size:.85rem; color:#94a3b8; margin:2px 0 6px; }
+.lb-head b { color:#e2e8f0; }
+.lb { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+.lb th { color:#64748b; font-weight:500; font-size:11px; text-align:right; padding:4px 6px; border-bottom:1px solid #1e293b; }
+.lb th:first-child, .lb td:first-child { text-align:left; }
+.lb td { padding:6px 6px; border-bottom:1px solid #111827; text-align:right; white-space:nowrap; }
+.lb tr.sel td { background:#1e293b; }
+.lb .nm { font-weight:600; color:#e2e8f0; }
+.lb .cd { font-size:10px; color:#64748b; margin-left:4px; }
+.lb .px { font-weight:700; font-size:14px; }
+.up { color:#ff5252; } .dn { color:#448aff; } .fl { color:#cbd5e1; }
+.vb { color:#ff8a80; } .vs { color:#82b1ff; }
+@keyframes flashUp { 0% { background:#ff525266; } 100% { background:transparent; } }
+@keyframes flashDn { 0% { background:#448aff66; } 100% { background:transparent; } }
+.fu { animation: flashUp .9s ease-out; } .fd { animation: flashDn .9s ease-out; }
+.spark { vertical-align:middle; }
+.lb-detail { background:#0b1220; border:1px solid #1e293b; border-radius:12px; padding:12px 14px; margin-top:8px; }
+.lb-detail .big { font-size:28px; font-weight:800; }
+.lb-detail .sub { color:#94a3b8; font-size:12px; }
+.ob { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0; font-size:13px; }
+.ob div { background:#111827; border-radius:8px; padding:6px 10px; }
+.tape { width:100%; font-size:12px; border-collapse:collapse; }
+.tape td { padding:2px 6px; text-align:right; color:#cbd5e1; }
+.tape td:first-child { text-align:left; color:#64748b; }
+@media (max-width: 640px) { .lb .hide-m { display:none; } .lb { font-size:12px; } .lb .px { font-size:13px; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -191,9 +217,9 @@ with col_ts:
 
 # ── 실시간 감시 현황 ──────────────────────────────────────────────────
 # 장이 열린 시간(프리마켓 08:00 ~ 애프터마켓 20:00)에는 대시보드가 직접 KIS 웹소켓 엔진을 띄워
-# 2초마다 자동 갱신한다. `python main.py --realtime` 이 따로 돌아 스냅샷 파일을 쓰고 있으면
+# 1초마다 자동 갱신한다 (주식창처럼 현재가 깜빡임·체결 테이프·스파크라인). `python main.py --realtime` 이 따로 돌아 스냅샷 파일을 쓰고 있으면
 # (같은 앱키로 웹소켓을 두 번 열지 않도록) 그 파일을 읽어 보여준다. 장외에는 마지막 스냅샷만 표시.
-LIVE_REFRESH_SEC = 2
+LIVE_REFRESH_SEC = 1
 SNAPSHOT_FRESH_SEC = 15
 
 
@@ -255,64 +281,131 @@ def _live_status() -> tuple[dict | None, str]:
     return rt, ("stale" if rt else "none")
 
 
-def _render_live_panel(rt: dict, source: str) -> None:
+def _spark_svg(values: list, w: int = 96, h: int = 28, stroke: float = 1.5) -> str:
+    vals = [v for v in values if isinstance(v, (int, float))]
+    if len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1
+    n = len(vals)
+    pts = " ".join(f"{i * (w - 2) / (n - 1) + 1:.1f},{h - 2 - (v - lo) / span * (h - 4):.1f}" for i, v in enumerate(vals))
+    color = "#ff5252" if vals[-1] > vals[0] else ("#448aff" if vals[-1] < vals[0] else "#94a3b8")
+    return (f'<svg class="spark" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<polyline fill="none" stroke="{color}" stroke-width="{stroke}" points="{pts}"/></svg>')
+
+
+def _cls(v: float) -> str:
+    return "up" if v > 0 else ("dn" if v < 0 else "fl")
+
+
+def _fmt_vol(v) -> str:
+    v = _safe_int(v)
+    return f"{v / 10000:.1f}만" if v >= 10000 else f"{v:,}"
+
+
+def _render_live_board(rt: dict, source: str) -> None:
+    """실제 주식창처럼: 현재가 깜빡임, 체결 테이프, 스파크라인, 1호가"""
     session = rt.get("session") or market_session()
     stats = rt.get("stats", {})
-    src_label = {"engine": "대시보드 내장 웹소켓", "file": "main.py --realtime 스냅샷", "stale": "마지막 스냅샷 (장외)", "none": ""}[source]
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("장 구분", ("🟢 " if rt.get("connected") else "⚫ ") + session,
-              help=f"시장 {rt.get('market', '')} · {rt.get('tr_id', '')} · {src_label}")
-    c2.metric("감시 종목", len(rt.get("watchlist", [])))
-    c3.metric("수신 체결", f"{stats.get('ticks', 0):,}")
-    c4.metric("에이전트 실행", rt.get("trigger_count", 0))
-    c5.metric("갱신", (rt.get("updated_at") or "")[11:19])
+    src_label = {"engine": "대시보드 내장 소켓", "file": "main.py --realtime", "stale": "마지막 스냅샷", "none": ""}[source]
+    icon = {"정규장": "🟢", "프리마켓": "🟠", "애프터마켓": "🟣"}.get(session, "🟡" if "동시호가" in session else "⚫")
+    conn = "연결" if rt.get("connected") else "끊김"
+    st.markdown(
+        f'<div class="lb-head"><span>{icon} <b>{session}</b> · {conn} · {src_label}</span>'
+        f'<span>체결 <b>{stats.get("ticks", 0):,}</b> · 신호 <b>{len(rt.get("signals", []))}</b> · {(rt.get("updated_at") or "")[11:19]}</span></div>',
+        unsafe_allow_html=True,
+    )
 
     rows = rt.get("snapshot", [])
-    if rows:
-        top = rows[:15]
-        names = [f"{r.get('name','')[:6]}" for r in top]
-        pcts = [_safe_float(r.get("pct_5m", 0)) for r in top]
-        fig_rt = go.Figure(go.Bar(
-            x=names, y=pcts,
-            marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in pcts],
-            text=[f"{v:+.2f}%" for v in pcts], textposition="outside",
-            customdata=[[r.get("vol_ratio_1m", 0), r.get("strength", 0)] for r in top],
-            hovertemplate="%{x}<br>5분 변동 %{y:+.2f}%<br>거래량비 %{customdata[0]:.1f}x · 체결강도 %{customdata[1]:.0f}<extra></extra>",
-        ))
-        fig_rt.add_hline(y=0, line_dash="dash", line_color="#475569")
-        fig_rt.update_layout(
-            title=f"감시 종목 5분 변동률 ({session})", height=280, template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.8)",
-            margin=dict(l=10, r=10, t=40, b=10),
-        )
-        _render_chart(fig_rt, key="rt_5m")
-        st.dataframe(
-            [{
-                "종목": f"{r.get('name','')}({r.get('code','')})",
-                "현재가": r.get("price", 0),
-                "전일比(%)": r.get("change_rate", 0),
-                "1분(%)": r.get("pct_1m", 0),
-                "5분(%)": r.get("pct_5m", 0),
-                "거래량비(1분)": r.get("vol_ratio_1m", 0),
-                "체결강도": r.get("strength", 0),
-                "매수비중5분(%)": r.get("buy_ratio_5m", 0),
-                "호가불균형": r.get("imbalance", 0),
-                "장": r.get("session", ""),
-                "시각": r.get("time", ""),
-            } for r in rows],
-            width="stretch" if _PLOTLY_HAS_WIDTH else None, hide_index=True,
-        )
-    elif rt.get("connected"):
-        st.info("웹소켓 연결됨. 체결이 들어오면 여기에 표시됩니다 (프리마켓은 NXT 거래 종목만 체결이 발생합니다).")
+    if not rows:
+        if rt.get("connected"):
+            st.info("소켓 연결됨. 체결이 들어오면 바로 표시됩니다. 프리마켓은 NXT 거래 종목만 체결이 발생합니다.")
+        else:
+            st.caption("아직 수신된 체결이 없습니다.")
+        return
+
+    # 정렬: 관심순(감시 목록 순서) / 등락률 / 거래량비
+    order_key = "lb_sort"
+    sort = st.pills("정렬", ["관심순", "등락률", "거래량비", "5분변동"], default="관심순", key=order_key,
+                    label_visibility="collapsed") if hasattr(st, "pills") else "관심순"
+    if sort == "등락률":
+        rows = sorted(rows, key=lambda r: _safe_float(r.get("change_rate")), reverse=True)
+    elif sort == "거래량비":
+        rows = sorted(rows, key=lambda r: _safe_float(r.get("vol_ratio_1m")), reverse=True)
+    elif sort == "5분변동":
+        rows = sorted(rows, key=lambda r: abs(_safe_float(r.get("pct_5m"))), reverse=True)
     else:
-        st.caption("아직 수신된 체결이 없습니다.")
+        idx = {w.get("code"): i for i, w in enumerate(rt.get("watchlist", []))}
+        rows = sorted(rows, key=lambda r: idx.get(r.get("code"), 999))
+
+    codes = [r["code"] for r in rows]
+    sel = st.session_state.get("lb_sel")
+    if sel not in codes:
+        sel = codes[0]
+    # 직전 렌더 가격과 비교해 틱 방향 깜빡임
+    prev_map = st.session_state.setdefault("lb_prev", {})
+    html = ['<table class="lb"><thead><tr><th>종목</th><th>현재가</th><th>등락</th><th>체결</th>'
+            '<th class="hide-m">강도</th><th class="hide-m">량비</th><th>추이</th></tr></thead><tbody>']
+    for r in rows:
+        code, price = r["code"], _safe_int(r.get("price"))
+        prev = prev_map.get(code, price)
+        flash = "fu" if price > prev else ("fd" if price < prev else "")
+        prev_map[code] = price
+        cr = _safe_float(r.get("change_rate"))
+        side = r.get("last_side", "")
+        vcls = "vb" if side == "buy" else ("vs" if side == "sell" else "")
+        html.append(
+            f'<tr class="{"sel" if code == sel else ""}">'
+            f'<td><span class="nm">{r.get("name", "")}</span><span class="cd">{code}</span>'
+            f'<div class="sub" style="font-size:10px;color:#64748b">{r.get("time", "")[:2]}:{r.get("time", "")[2:4]}:{r.get("time", "")[4:6]}</div></td>'
+            f'<td class="px {_cls(cr)} {flash}">{price:,}</td>'
+            f'<td class="{_cls(cr)}">{cr:+.2f}%<div style="font-size:10px">{_safe_int(r.get("change")):+,}</div></td>'
+            f'<td class="{vcls}">{_fmt_vol(r.get("last_volume"))}<div style="font-size:10px;color:#64748b">{_fmt_vol(r.get("acc_volume"))}</div></td>'
+            f'<td class="hide-m">{_safe_float(r.get("strength")):.0f}</td>'
+            f'<td class="hide-m">{_safe_float(r.get("vol_ratio_1m")):.1f}x</td>'
+            f'<td>{_spark_svg(r.get("spark", []))}</td></tr>'
+        )
+    html.append("</tbody></table>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+    # 상세: 종목 선택 → 1호가 · 체결 테이프 · 30분 추이
+    names = {r["code"]: f"{r.get('name', '')}" for r in rows}
+    if hasattr(st, "pills"):
+        picked = st.pills("종목", codes, format_func=lambda c: names.get(c, c), default=sel, key="lb_pick",
+                          label_visibility="collapsed")
+        if picked in codes:
+            sel = picked
+    st.session_state["lb_sel"] = sel
+    r = next((x for x in rows if x["code"] == sel), rows[0])
+    cr = _safe_float(r.get("change_rate"))
+    tape_rows = "".join(
+        f'<tr><td>{t.get("time", "")[:2]}:{t.get("time", "")[2:4]}:{t.get("time", "")[4:6]}</td>'
+        f'<td class="{"up" if t.get("side") == "buy" else ("dn" if t.get("side") == "sell" else "fl")}">{_safe_int(t.get("price")):,}</td>'
+        f'<td class="{"vb" if t.get("side") == "buy" else ("vs" if t.get("side") == "sell" else "")}">{_fmt_vol(t.get("volume"))}</td></tr>'
+        for t in r.get("tape", [])
+    )
+    st.markdown(
+        f'<div class="lb-detail">'
+        f'<div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px">'
+        f'<div><span class="nm" style="font-size:16px;font-weight:700">{r.get("name", "")}</span> <span class="cd">{sel}</span>'
+        f'<div class="big {_cls(cr)}">{_safe_int(r.get("price")):,}</div>'
+        f'<div class="{_cls(cr)}">{_safe_int(r.get("change")):+,} ({cr:+.2f}%)</div>'
+        f'<div class="sub">고 {_safe_int(r.get("high")):,} · 저 {_safe_int(r.get("low")):,} · 시 {_safe_int(r.get("open")):,} · 누적 {_fmt_vol(r.get("acc_volume"))}</div></div>'
+        f'<div>{_spark_svg(r.get("spark", []), w=220, h=64, stroke=2)}<div class="sub" style="text-align:right">최근 30분</div></div></div>'
+        f'<div class="ob"><div><span class="sub">매도 1호가</span><br><b class="dn">{_safe_int(r.get("ask1")):,}</b></div>'
+        f'<div><span class="sub">매수 1호가</span><br><b class="up">{_safe_int(r.get("bid1")):,}</b></div>'
+        f'<div><span class="sub">체결강도</span><br><b>{_safe_float(r.get("strength")):.0f}</b> <span class="sub">5분 매수비중 {_safe_float(r.get("buy_ratio_5m")):.0f}%</span></div>'
+        f'<div><span class="sub">호가 잔량비(매수/매도)</span><br><b>{_safe_float(r.get("imbalance")):.2f}</b> <span class="sub">1분 거래량 {_safe_float(r.get("vol_ratio_1m")):.1f}x</span></div></div>'
+        f'<div class="sub" style="margin-top:4px">체결 테이프</div><table class="tape">{tape_rows}</table></div>',
+        unsafe_allow_html=True,
+    )
 
     sigs = rt.get("signals", [])
     if sigs:
         st.markdown("**최근 신호**")
-        for sg in sigs[:10]:
+        for sg in sigs[:8]:
             t = datetime.fromtimestamp(sg.get("at", 0)).strftime("%H:%M:%S") if sg.get("at") else ""
-            st.markdown(f"- `{t}` **{sg.get('label','')}** — {sg.get('message','')}")
+            st.markdown(f"- `{t}` **{sg.get('label', '')}** — {sg.get('message', '')}")
 
 
 def _render_trigger_results() -> None:
@@ -347,7 +440,7 @@ def _live_section_body() -> None:
             + ("" if KIS_APP_KEY else "KIS_APP_KEY 가 설정되어 있지 않습니다.")
         )
         return
-    _render_live_panel(rt, source)
+    _render_live_board(rt, source)
     _render_trigger_results()
 
 

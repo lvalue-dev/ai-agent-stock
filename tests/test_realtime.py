@@ -251,3 +251,18 @@ def test_client_dispatches_unified_trade():
     client = KISWebSocketClient(on_tick=ticks.append, approval_key_provider=lambda: "k")
     client.handle_message(f"0|H0UNCNT0|001|{_trade_payload()}")
     assert len(ticks) == 1 and ticks[0].code == "005930"
+
+
+def test_buffer_tape_and_sparkline():
+    buf = TickBuffer(window_sec=1800)
+    t0 = 5_000_000.0
+    for i in range(10):
+        buf.add(_tick(price=70000 + i * 10, volume=i + 1, at=t0 + i * 60, side="buy" if i % 2 else "sell"))
+    now = t0 + 9 * 60
+    tape = buf.tape("005930", 3)
+    assert [t["price"] for t in tape] == [70090, 70080, 70070] and tape[0]["side"] == "buy"
+    spark = buf.sparkline("005930", points=30, seconds=600, now=now)
+    assert len(spark) == 30 and spark[-1] == 70090 and spark[0] >= 70000 and all(isinstance(v, int) for v in spark)
+    assert spark == sorted(spark)   # 단조 증가 데이터는 스파크라인도 증가
+    s = buf.summary("005930", now=now)
+    assert s["prev_price"] == 70080 and s["last_volume"] == 10 and len(s["tape"]) == 8 and len(s["spark"]) == 60
