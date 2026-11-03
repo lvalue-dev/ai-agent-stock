@@ -4,10 +4,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
-from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH
+from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH, KIS_APP_KEY
+from tools.kis_websocket import market_session
 import inspect
 import json
 import os
+import time
 from utils.discord import send_report
 
 st.set_page_config(
@@ -29,6 +31,7 @@ body { background-color: #0f172a; }
 .step-pending { background: #1e293b; color: #64748b; }
 .step-running { background: #1e3a5f; color: #60a5fa; animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+@media (max-width: 640px) { h1 { font-size: 1.4rem !important; } h2 { font-size: 1.15rem !important; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -186,7 +189,14 @@ with col_ts:
     if st.session_state.ran_at:
         st.caption(f"마지막 분석: {st.session_state.ran_at}")
 
-# ── 실시간 감시 현황 (python main.py --realtime 이 쓰는 스냅샷) ─────────
+# ── 실시간 감시 현황 ──────────────────────────────────────────────────
+# 장이 열린 시간(프리마켓 08:00 ~ 애프터마켓 20:00)에는 대시보드가 직접 KIS 웹소켓 엔진을 띄워
+# 2초마다 자동 갱신한다. `python main.py --realtime` 이 따로 돌아 스냅샷 파일을 쓰고 있으면
+# (같은 앱키로 웹소켓을 두 번 열지 않도록) 그 파일을 읽어 보여준다. 장외에는 마지막 스냅샷만 표시.
+LIVE_REFRESH_SEC = 2
+SNAPSHOT_FRESH_SEC = 15
+
+
 def _load_realtime_snapshot() -> dict | None:
     try:
         if os.path.exists(REALTIME_SNAPSHOT_PATH):
@@ -197,62 +207,159 @@ def _load_realtime_snapshot() -> dict | None:
     return None
 
 
-with st.expander("⚡ 실시간 감시 현황", expanded=False):
-    rt = _load_realtime_snapshot()
-    if not rt:
-        st.caption(f"`python main.py --realtime` 를 실행하면 `{REALTIME_SNAPSHOT_PATH}` 에 스냅샷이 기록되고 여기에 표시됩니다.")
-    else:
-        if st.button("🔄 새로고침", key="rt_refresh"):
-            st.rerun()
-        stats = rt.get("stats", {})
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("연결", ("🟢 " if rt.get("connected") else "🔴 ") + (rt.get("session") or ("연결됨" if rt.get("connected") else "끊김")),
-                  help=f"시장 {rt.get('market', '')} · {rt.get('tr_id', '')}")
-        c2.metric("감시 종목", len(rt.get("watchlist", [])))
-        c3.metric("수신 체결", f"{stats.get('ticks', 0):,}")
-        c4.metric("에이전트 실행", rt.get("trigger_count", 0))
-        c5.metric("갱신", (rt.get("updated_at") or "")[11:19])
+def _snapshot_is_fresh() -> bool:
+    try:
+        return time.time() - os.path.getmtime(REALTIME_SNAPSHOT_PATH) < SNAPSHOT_FRESH_SEC
+    except OSError:
+        return False
 
-        rows = rt.get("snapshot", [])
-        if rows:
-            names = [f"{r.get('name','')[:6]}" for r in rows[:15]]
-            pcts = [_safe_float(r.get("pct_5m", 0)) for r in rows[:15]]
-            fig_rt = go.Figure(go.Bar(
-                x=names, y=pcts,
-                marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in pcts],
-                text=[f"{v:+.2f}%" for v in pcts], textposition="outside",
-                customdata=[[r.get("vol_ratio_1m", 0), r.get("strength", 0)] for r in rows[:15]],
-                hovertemplate="%{x}<br>5분 변동 %{y:+.2f}%<br>거래량비 %{customdata[0]:.1f}x · 체결강도 %{customdata[1]:.0f}<extra></extra>",
-            ))
-            fig_rt.add_hline(y=0, line_dash="dash", line_color="#475569")
-            fig_rt.update_layout(
-                title="감시 종목 5분 변동률", height=280, template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.8)",
-                margin=dict(l=10, r=10, t=40, b=10),
-            )
-            _render_chart(fig_rt, key="rt_5m")
-            st.dataframe(
-                [{
-                    "종목": f"{r.get('name','')}({r.get('code','')})",
-                    "현재가": r.get("price", 0),
-                    "전일比(%)": r.get("change_rate", 0),
-                    "1분(%)": r.get("pct_1m", 0),
-                    "5분(%)": r.get("pct_5m", 0),
-                    "거래량비(1분)": r.get("vol_ratio_1m", 0),
-                    "체결강도": r.get("strength", 0),
-                    "매수비중5분(%)": r.get("buy_ratio_5m", 0),
-                    "호가불균형": r.get("imbalance", 0),
-                    "장": r.get("session", ""),
-                    "시각": r.get("time", ""),
-                } for r in rows],
-                use_container_width=True, hide_index=True,
-            )
-        sigs = rt.get("signals", [])
-        if sigs:
-            st.markdown("**최근 신호**")
-            for sg in sigs[:10]:
-                t = datetime.fromtimestamp(sg.get("at", 0)).strftime("%H:%M:%S") if sg.get("at") else ""
-                st.markdown(f"- `{t}` **{sg.get('label','')}** — {sg.get('message','')}")
+
+@st.cache_resource(show_spinner="📡 KIS 웹소켓 연결 중...")
+def _get_engine():
+    """서버 프로세스당 하나만 띄우는 실시간 엔진. 신호가 오면 에이전트 파이프라인을 백그라운드로 실행."""
+    from realtime import RealtimeEngine, build_watchlist
+    from main import run_pipeline
+
+    results: list[dict] = []
+
+    def on_trigger(event: dict) -> None:
+        state = run_pipeline(trigger_event=event)
+        if state:
+            state["_triggered_at"] = event.get("at", "")
+            results.append(state)
+            del results[:-5]
+
+    watchlist = build_watchlist()
+    if not watchlist:
+        raise RuntimeError("감시 종목을 가져오지 못했습니다 (KIS REST 거래량 순위 조회 실패 또는 WATCHLIST 비어 있음)")
+    engine = RealtimeEngine(watchlist, on_trigger=on_trigger, snapshot_path=None)
+    engine.trigger_results = results
+    engine.start()
+    return engine
+
+
+def _live_status() -> tuple[dict | None, str]:
+    """(상태 dict, 소스) 소스: engine | file | stale | none"""
+    session = market_session()
+    if _snapshot_is_fresh() and "live_engine" not in st.session_state:
+        return _load_realtime_snapshot(), "file"
+    if session != "장외" and KIS_APP_KEY:
+        try:
+            engine = _get_engine()
+            st.session_state["live_engine"] = True
+            return engine.status(), "engine"
+        except Exception as e:  # 접속키 발급 실패, 감시 종목 조회 실패 등
+            _get_engine.clear()
+            st.error(f"웹소켓 엔진 시작 실패: {e}")
+    rt = _load_realtime_snapshot()
+    return rt, ("stale" if rt else "none")
+
+
+def _render_live_panel(rt: dict, source: str) -> None:
+    session = rt.get("session") or market_session()
+    stats = rt.get("stats", {})
+    src_label = {"engine": "대시보드 내장 웹소켓", "file": "main.py --realtime 스냅샷", "stale": "마지막 스냅샷 (장외)", "none": ""}[source]
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("장 구분", ("🟢 " if rt.get("connected") else "⚫ ") + session,
+              help=f"시장 {rt.get('market', '')} · {rt.get('tr_id', '')} · {src_label}")
+    c2.metric("감시 종목", len(rt.get("watchlist", [])))
+    c3.metric("수신 체결", f"{stats.get('ticks', 0):,}")
+    c4.metric("에이전트 실행", rt.get("trigger_count", 0))
+    c5.metric("갱신", (rt.get("updated_at") or "")[11:19])
+
+    rows = rt.get("snapshot", [])
+    if rows:
+        top = rows[:15]
+        names = [f"{r.get('name','')[:6]}" for r in top]
+        pcts = [_safe_float(r.get("pct_5m", 0)) for r in top]
+        fig_rt = go.Figure(go.Bar(
+            x=names, y=pcts,
+            marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in pcts],
+            text=[f"{v:+.2f}%" for v in pcts], textposition="outside",
+            customdata=[[r.get("vol_ratio_1m", 0), r.get("strength", 0)] for r in top],
+            hovertemplate="%{x}<br>5분 변동 %{y:+.2f}%<br>거래량비 %{customdata[0]:.1f}x · 체결강도 %{customdata[1]:.0f}<extra></extra>",
+        ))
+        fig_rt.add_hline(y=0, line_dash="dash", line_color="#475569")
+        fig_rt.update_layout(
+            title=f"감시 종목 5분 변동률 ({session})", height=280, template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.8)",
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        _render_chart(fig_rt, key="rt_5m")
+        st.dataframe(
+            [{
+                "종목": f"{r.get('name','')}({r.get('code','')})",
+                "현재가": r.get("price", 0),
+                "전일比(%)": r.get("change_rate", 0),
+                "1분(%)": r.get("pct_1m", 0),
+                "5분(%)": r.get("pct_5m", 0),
+                "거래량비(1분)": r.get("vol_ratio_1m", 0),
+                "체결강도": r.get("strength", 0),
+                "매수비중5분(%)": r.get("buy_ratio_5m", 0),
+                "호가불균형": r.get("imbalance", 0),
+                "장": r.get("session", ""),
+                "시각": r.get("time", ""),
+            } for r in rows],
+            width="stretch" if _PLOTLY_HAS_WIDTH else None, hide_index=True,
+        )
+    elif rt.get("connected"):
+        st.info("웹소켓 연결됨. 체결이 들어오면 여기에 표시됩니다 (프리마켓은 NXT 거래 종목만 체결이 발생합니다).")
+    else:
+        st.caption("아직 수신된 체결이 없습니다.")
+
+    sigs = rt.get("signals", [])
+    if sigs:
+        st.markdown("**최근 신호**")
+        for sg in sigs[:10]:
+            t = datetime.fromtimestamp(sg.get("at", 0)).strftime("%H:%M:%S") if sg.get("at") else ""
+            st.markdown(f"- `{t}` **{sg.get('label','')}** — {sg.get('message','')}")
+
+
+def _render_trigger_results() -> None:
+    """대시보드 내장 엔진이 실행한 에이전트 분석 결과 (최근 5건)"""
+    if "live_engine" not in st.session_state:
+        return
+    engine = _get_engine()
+    results = getattr(engine, "trigger_results", [])
+    if not results:
+        return
+    st.markdown("**⚡ 실시간 트리거 분석 (최근)**")
+    for i, res in enumerate(reversed(results)):
+        ev = res.get("trigger_event", {}) or {}
+        cols = st.columns([5, 1])
+        cols[0].markdown(f"- `{res.get('_triggered_at','')}` **{res.get('final_decision','')}** — {ev.get('summary','')[:120]}")
+        if cols[1].button("보기", key=f"trig_view_{i}"):
+            st.session_state.results = res
+            st.session_state.ran_at = res.get("_triggered_at", "")
+            st.session_state.messages = [
+                {"avatar": AGENT_META.get(n, ("🤖", n))[0], "name": AGENT_META.get(n, ("🤖", n))[1],
+                 "content": _node_content(n, res), "node": n}
+                for n in PIPELINE if _node_content(n, res)
+            ]
+            st.rerun(scope="app")   # fragment 안이므로 앱 전체를 다시 그린다
+
+
+def _live_section_body() -> None:
+    rt, source = _live_status()
+    if not rt:
+        st.caption(
+            "장이 열리면(평일 08:00~20:00) 자동으로 웹소켓에 연결됩니다. "
+            + ("" if KIS_APP_KEY else "KIS_APP_KEY 가 설정되어 있지 않습니다.")
+        )
+        return
+    _render_live_panel(rt, source)
+    _render_trigger_results()
+
+
+# 장이 열린 시간에만 자동 갱신 (fragment 는 이 부분만 다시 그린다)
+_live_refresh = LIVE_REFRESH_SEC if market_session() != "장외" else None
+if hasattr(st, "fragment"):
+    _live_section = st.fragment(run_every=_live_refresh)(_live_section_body)
+else:
+    _live_section = _live_section_body
+
+with st.expander("⚡ 실시간 감시 현황", expanded=market_session() != "장외"):
+    _live_section()
 
 # ── 실행 ──────────────────────────────────────────────────────────────
 if run_clicked:

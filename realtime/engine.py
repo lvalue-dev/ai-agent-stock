@@ -16,7 +16,7 @@ from config import (
     WATCHLIST, WATCHLIST_AUTO_LIMIT, REALTIME_MAX_SUBSCRIPTIONS, REALTIME_ORDERBOOK,
     REALTIME_TRIGGER_COOLDOWN_SEC, REALTIME_BATCH_WINDOW_SEC, REALTIME_SNAPSHOT_PATH,
 )
-from tools.kis_websocket import KISWebSocketClient, Tick, OrderBook, market_session, TR_TRADE
+from tools.kis_websocket import KISWebSocketClient, Tick, OrderBook, market_session, TR_TRADE, KST
 from config import KIS_MARKET
 from realtime.buffer import TickBuffer
 from realtime.signals import Signal, SignalDetector
@@ -190,7 +190,7 @@ class RealtimeEngine:
             if s.code not in codes:
                 codes.append(s.code)
         return {
-            "at": datetime.now().isoformat(timespec="seconds"),
+            "at": datetime.now(KST).isoformat(timespec="seconds"),
             "session": market_session(),
             "signals": [s.to_dict() for s in signals],
             "codes": codes,
@@ -203,8 +203,8 @@ class RealtimeEngine:
     # ── 스냅샷 (대시보드용) ────────────────────────────────────────
     def status(self) -> dict:
         return {
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "started_at": datetime.fromtimestamp(self.started_at).isoformat(timespec="seconds") if self.started_at else None,
+            "updated_at": datetime.now(KST).isoformat(timespec="seconds"),
+            "started_at": datetime.fromtimestamp(self.started_at, KST).isoformat(timespec="seconds") if self.started_at else None,
             "connected": self.client.connected.is_set(),
             "market": KIS_MARKET,
             "tr_id": TR_TRADE,
@@ -212,7 +212,7 @@ class RealtimeEngine:
             "watchlist": self.watchlist,
             "stats": dict(self.client.stats),
             "trigger_count": self.trigger_count,
-            "last_trigger_at": datetime.fromtimestamp(self._last_trigger_at).isoformat(timespec="seconds") if self._last_trigger_at else None,
+            "last_trigger_at": datetime.fromtimestamp(self._last_trigger_at, KST).isoformat(timespec="seconds") if self._last_trigger_at else None,
             "snapshot": self.buffer.snapshot(limit=50),
             "signals": [s.to_dict() for s in self.recent_signals[-30:]][::-1],
         }
