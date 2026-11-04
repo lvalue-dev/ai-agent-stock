@@ -90,6 +90,8 @@ class RealtimeEngine:
         self.live_dir = live_dir
         self.backfill_pages = backfill_pages
         self.backfilled: set[str] = set()
+        self.last_error = ""          # 피드/스냅샷 기록 실패 등 진단용
+        self.live_writes = 0
 
         self._queue: queue.Queue[Signal] = queue.Queue()
         self._stop = threading.Event()
@@ -221,9 +223,29 @@ class RealtimeEngine:
             "watchlist": self.watchlist,
             "stats": dict(self.client.stats),
             "trigger_count": self.trigger_count,
+            "diag": self.diagnostics(),
             "last_trigger_at": datetime.fromtimestamp(self._last_trigger_at, KST).isoformat(timespec="seconds") if self._last_trigger_at else None,
             "snapshot": self.buffer.snapshot(limit=50),
             "signals": [s.to_dict() for s in self.recent_signals[-30:]][::-1],
+        }
+
+    def diagnostics(self) -> dict:
+        """대시보드 진단 패널용"""
+        c = self.client
+        last_tick = getattr(c, "last_tick_at", 0.0)
+        return {
+            "connected": c.connected.is_set(),
+            "last_event": getattr(c, "last_event", ""),
+            "ticks": c.stats.get("ticks", 0),
+            "last_tick_age_sec": int(time.time() - last_tick) if last_tick else None,
+            "subscriptions": len(getattr(c, "subscriptions", []) or []),
+            "watchlist": len(self.watchlist),
+            "backfilled": len(self.backfilled),
+            "live_dir": os.path.abspath(self.live_dir) if self.live_dir else None,
+            "live_writes": self.live_writes,
+            "last_error": self.last_error,
+            "trigger_count": self.trigger_count,
+            "uptime_sec": int(time.time() - self.started_at) if self.started_at else 0,
         }
 
     def write_snapshot(self) -> None:
@@ -236,7 +258,8 @@ class RealtimeEngine:
                 json.dump(self.status(), f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.snapshot_path)
         except Exception as e:
-            log.debug("스냅샷 저장 실패: %s", e)
+            self.last_error = f"스냅샷 저장 실패 ({self.snapshot_path}): {e}"
+            log.warning(self.last_error)
 
     def _snapshot_loop(self) -> None:
         n = 0
@@ -286,8 +309,10 @@ class RealtimeEngine:
                         os.path.join(self.live_dir, "candles", f"{code}.json"),
                         {"code": code, "name": item.get("name", ""), "candles": self.buffer.candles(code)},
                     )
+            self.live_writes += 1
         except Exception as e:
-            log.debug("피드 저장 실패: %s", e)
+            self.last_error = f"피드 저장 실패 ({self.live_dir}): {e}"
+            log.warning(self.last_error)
 
     @staticmethod
     def _atomic_json(path: str, obj) -> None:

@@ -54,20 +54,31 @@
     var p = ''; try { p = window.parent.location.pathname; } catch (e) { p = location.pathname; }
     if (!p.endsWith('/')) p += '/';
     window.__BASE__ = p + 'app/static/';
-    document.write('<script src="' + window.__BASE__ + 'vendor/lightweight-charts.js"><\/script>');
   })();
 </script>
 <script>
 (() => {
   const BASE = window.__BASE__;
-  const url = (f) => BASE + f + '?t=' + Date.now();
   const $ = (id) => document.getElementById(id);
+  const setStatus = (t) => { const el = $('status'); if (el) el.textContent = t; };
+  const setEmpty = (t) => { const el = $('empty'); if (el) { el.textContent = t; el.style.display = 'flex'; } };
+
+  // 차트 라이브러리를 정적 경로에서 로드. 실패하면 원인을 화면에 남긴다 (정적 서빙 꺼짐, 경로 불일치 등)
+  const lib = document.createElement('script');
+  lib.src = BASE + 'vendor/lightweight-charts.js';
+  lib.onload = () => { if (window.LightweightCharts) main(); else { setEmpty('차트 라이브러리 로드 실패'); setStatus('❌ ' + lib.src + ' 가 라이브러리가 아닌 응답(HTML)을 돌려줍니다. Streamlit 정적 서빙(enableStaticServing)이 꺼져 있을 때 생깁니다.'); } };
+  lib.onerror = () => { setEmpty('차트 라이브러리를 불러오지 못했습니다'); setStatus('❌ ' + lib.src + ' 를 받을 수 없습니다. Streamlit 정적 서빙(enableStaticServing) 설정을 확인하세요.'); };
+  document.head.appendChild(lib);
+  setStatus('라이브러리 로딩 중… ' + lib.src);
+
+function main() {
+  const url = (f) => BASE + f + '?t=' + Date.now();
   const fmt = (n) => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('ko-KR');
   const fmtVol = (v) => v >= 1e8 ? (v / 1e8).toFixed(1) + '억' : v >= 1e4 ? (v / 1e4).toFixed(1) + '만' : fmt(v);
   const hhmm = (t) => { const d = new Date(t * 1000); return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); };
   const cls = (v) => v > 0 ? 'up' : v < 0 ? 'dn' : 'fl';
 
-  const state = { quotes: [], sel: null, tf: 1, raw: [], rawCode: null, lastPrice: {}, lastFullFetch: 0, lastAgg: [] };
+  const state = { quotes: [], sel: null, tf: 1, raw: [], rawCode: null, lastPrice: {}, lastFullFetch: 0, lastAgg: [], feedOk: null };
   const TFS = [1, 3, 5, 15];
 
   // ── 차트 ───────────────────────────────────────────────────────────
@@ -234,14 +245,26 @@
       }
       renderHead();
       const icon = { '정규장': '🟢', '프리마켓': '🟠', '애프터마켓': '🟣' }[j.session] || (String(j.session || '').includes('동시호가') ? '🟡' : '⚫');
-      $('status').textContent = `${icon} ${j.session || ''} · ${j.connected ? '소켓 연결' : '소켓 끊김'} · ${(j.updated_at || '').slice(11, 19)}`;
+      // 피드가 멈췄는지 (엔진이 죽었거나 기록 실패) 데이터 시각으로 판단
+      const upd = Date.parse(j.updated_at || '');
+      const ageSec = isNaN(upd) ? null : Math.round((Date.now() - upd) / 1000);
+      state.feedOk = true;
+      if (ageSec != null && ageSec > 15) {
+        setStatus(`⚠️ 피드 정지: 마지막 기록 ${ageSec}초 전 (${(j.updated_at || '').slice(11, 19)}). 엔진이 멈췄거나 기록에 실패했습니다 (대시보드 '실시간 진단' 참고)`);
+      } else {
+        setStatus(`${icon} ${j.session || ''} · ${j.connected ? '소켓 연결' : '소켓 끊김'} · ${(j.updated_at || '').slice(11, 19)}` + (q && q.price == null ? ' · 체결 대기' : ''));
+      }
     } catch (e) {
-      $('status').textContent = '피드 대기 중… (' + e.message + ')';
+      state.feedOk = false;
+      const u = BASE + 'live/live.json';
+      setStatus(`❌ 피드를 읽지 못함 (${e.message}) · ${u} · 정적 서빙이 꺼져 있거나 엔진이 아직 피드를 쓰지 않았습니다`);
+      if (!state.quotes.length) setEmpty('피드 대기 중… 대시보드의 "실시간 진단"을 확인하세요');
     }
   }
   renderTfs();
   poll();
   setInterval(poll, 1000);
+}
 })();
 </script>
 </body>

@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 from graph.workflow import build_graph, get_initial_state
-from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH, KIS_APP_KEY
+from config import LLM_PROVIDER, KIS_MODE, MAX_DEBATE_ROUNDS, DISCORD_WEBHOOK_URL, REALTIME_SNAPSHOT_PATH, KIS_APP_KEY, REALTIME_LIVE_DIR
 from tools.kis_websocket import market_session, KST
 import streamlit.components.v1 as components
 import inspect
@@ -459,7 +459,61 @@ def _live_chart_html() -> str:
 
 
 def _render_live_chart() -> None:
+    try:
+        static_on = bool(st.config.get_option("server.enableStaticServing"))
+    except Exception:
+        static_on = False
+    if not static_on:
+        st.error(
+            "Streamlit 정적 서빙이 꺼져 있어 실시간 차트가 데이터를 받을 수 없습니다. "
+            "저장소 루트(`.streamlit/config.toml` 이 있는 폴더)에서 실행하거나 "
+            "`streamlit run dashboard.py --server.enableStaticServing true` 로 실행하세요."
+        )
     components.html(_live_chart_html(), height=560, scrolling=False)
+
+
+def _render_diagnostics(rt: dict | None, source: str) -> None:
+    """실시간이 멈춰 보일 때 어디서 막혔는지 한눈에 보이도록"""
+    import streamlit as _st
+    try:
+        static_on = bool(_st.config.get_option("server.enableStaticServing"))
+    except Exception:
+        static_on = False
+    try:
+        base_path = _st.config.get_option("server.baseUrlPath") or ""
+    except Exception:
+        base_path = ""
+    live_json = os.path.abspath(os.path.join(REALTIME_LIVE_DIR, "live.json")) if REALTIME_LIVE_DIR else ""
+    feed_age = None
+    if live_json and os.path.exists(live_json):
+        feed_age = int(time.time() - os.path.getmtime(live_json))
+    diag = (rt or {}).get("diag") or {}
+    session = market_session()
+
+    rows = []
+    def row(ok, label, detail):
+        rows.append(f"- {'✅' if ok else '❌'} **{label}** — {detail}")
+
+    row(static_on, "Streamlit 정적 서빙", "켜짐" if static_on else
+        "꺼짐 → 차트 피드(/app/static/live/live.json)가 404. 저장소의 `.streamlit/config.toml` 이 있는 폴더에서 실행하거나 "
+        "`streamlit run dashboard.py --server.enableStaticServing true` 로 실행하세요")
+    row(bool(KIS_APP_KEY), "KIS 앱키", "설정됨" if KIS_APP_KEY else ".env 에 KIS_APP_KEY 없음")
+    row(session != "장외", "장 구분", f"{session} (평일 08:00~20:00 KST 에만 소켓 연결)")
+    src_txt = {"engine": "대시보드 내장 엔진", "file": "main.py --realtime 스냅샷", "stale": "마지막 스냅샷(엔진 없음)", "none": "엔진 없음"}[source]
+    row(source in ("engine", "file"), "엔진", src_txt)
+    if diag:
+        row(diag.get("connected"), "KIS 웹소켓", f"{'연결' if diag.get('connected') else '끊김'} · 마지막 이벤트: {diag.get('last_event', '')}")
+        age = diag.get("last_tick_age_sec")
+        row(diag.get("ticks", 0) > 0 and (age is None or age < 120), "체결 수신",
+            f"{diag.get('ticks', 0):,}건" + (f" · 마지막 {age}초 전" if age is not None else " · 아직 없음 (장외/NXT 비거래/구독 오류)"))
+        row(diag.get("live_writes", 0) > 0 and not diag.get("last_error"), "피드 기록",
+            f"{diag.get('live_writes', 0)}회 → {diag.get('live_dir')}" + (f" · 오류: {diag['last_error']}" if diag.get("last_error") else ""))
+        row(diag.get("subscriptions", 0) > 0, "구독", f"{diag.get('subscriptions', 0)}건 / 감시 {diag.get('watchlist', 0)}종목 · 분봉 백필 {diag.get('backfilled', 0)}종목")
+    row(feed_age is not None and feed_age < 15, "피드 파일",
+        (f"{live_json} · {feed_age}초 전 갱신" if feed_age is not None else f"{live_json} 없음"))
+    rows.append(f"- ℹ️ Streamlit {_st.__version__} · baseUrlPath=`{base_path or '/'}` · 시장 {rt.get('market', '') if rt else ''} · 서버 시각 {datetime.now(KST):%H:%M:%S} KST")
+    st.markdown("\n".join(rows))
+    st.caption("차트가 멈춰 있으면 위에서 ❌ 인 항목이 원인입니다. 이 패널을 캡처해 주시면 바로 짚을 수 있습니다.")
 
 
 def _live_section_body() -> None:
@@ -469,9 +523,16 @@ def _live_section_body() -> None:
             "장이 열리면(평일 08:00~20:00) 자동으로 웹소켓에 연결됩니다. "
             + ("" if KIS_APP_KEY else "KIS_APP_KEY 가 설정되어 있지 않습니다.")
         )
-        return
-    _render_live_board(rt, source)
-    _render_trigger_results()
+    else:
+        _render_live_board(rt, source)
+        _render_trigger_results()
+    try:
+        _static_on = bool(st.config.get_option("server.enableStaticServing"))
+    except Exception:
+        _static_on = False
+    healthy = bool(rt and rt.get("connected") and (rt.get("stats") or {}).get("ticks", 0) > 0 and _static_on)
+    with st.expander("🔧 실시간 진단", expanded=not healthy):
+        _render_diagnostics(rt, source)
 
 
 # 장이 열린 시간에만 자동 갱신 (fragment 는 이 부분만 다시 그린다)

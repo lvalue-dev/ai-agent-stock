@@ -328,6 +328,8 @@ class KISWebSocketClient:
         self._last_msg_at = 0.0
         self._watchdog_sec = watchdog_sec
         self.stats = {"ticks": 0, "orderbooks": 0, "reconnects": 0, "errors": 0}
+        self.last_event = "아직 연결 시도 전"   # 진단용: 마지막 연결/구독/오류 메시지
+        self.last_tick_at = 0.0
 
     # ── 구독 관리 ───────────────────────────────────────────────────
     def subscribe(self, code: str, orderbook: bool = False) -> bool:
@@ -394,6 +396,7 @@ class KISWebSocketClient:
                 backoff = 1
             except Exception as e:
                 self.stats["errors"] += 1
+                self.last_event = f"연결 실패: {e}"
                 log.error("웹소켓 루프 오류: %s", e)
             finally:
                 self.connected.clear()
@@ -421,6 +424,7 @@ class KISWebSocketClient:
     def _on_open(self, ws) -> None:
         log.info("KIS 웹소켓 연결됨: %s", self.url)
         self._last_msg_at = time.time()
+        self.last_event = f"연결됨 ({time.strftime('%H:%M:%S')}) · 구독 {len(self.subscriptions)}건 요청"
         self.connected.set()
         for tr_id, code in self.subscriptions:
             self._send(build_subscribe_message(self._approval_key, tr_id, code, True))
@@ -441,6 +445,7 @@ class KISWebSocketClient:
             for rec in records:
                 if tr_id in TRADE_TR_IDS:
                     self.stats["ticks"] += 1
+                    self.last_tick_at = time.time()
                     self.on_tick(rec)
                 elif tr_id in ORDERBOOK_TR_IDS and self.on_orderbook:
                     self.stats["orderbooks"] += 1
@@ -457,16 +462,20 @@ class KISWebSocketClient:
         rt_cd = body.get("rt_cd")
         msg = body.get("msg1", "")
         if rt_cd not in (None, "0"):
+            self.last_event = f"구독 오류 [{tr_id} {header.get('tr_key', '')}]: {msg}"
             log.warning("구독 응답 오류 [%s %s]: %s", tr_id, header.get("tr_key", ""), msg)
         else:
+            self.last_event = f"구독 응답 [{tr_id} {header.get('tr_key', '')}]: {msg}"
             log.info("구독 응답 [%s %s]: %s", tr_id, header.get("tr_key", ""), msg)
 
     def _on_error(self, ws, error) -> None:
         self.stats["errors"] += 1
+        self.last_event = f"웹소켓 오류: {error}"
         log.error("웹소켓 오류: %s", error)
 
     def _on_close(self, ws, status_code, msg) -> None:
         self.connected.clear()
+        self.last_event = f"웹소켓 종료 ({status_code} {msg})"
         log.info("웹소켓 종료 (%s %s)", status_code, msg)
 
     def _send(self, payload: str) -> None:
